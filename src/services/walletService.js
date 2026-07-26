@@ -39,11 +39,31 @@ const formatUsd = (value) => new Intl.NumberFormat('en-US', {
   notation: Number(value) >= 1_000_000 ? 'compact' : 'standard',
 }).format(Number(value || 0))
 
-const formatNumber = (value, maximumFractionDigits = 4) => new Intl.NumberFormat('en-US', {
-  maximumFractionDigits,
-}).format(Number(value || 0))
+const formatNumber = (value, maximumFractionDigits = 4) => {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return '—'
+  return new Intl.NumberFormat('en-US', {
+    maximumFractionDigits,
+  }).format(Number(value))
+}
 
 const explanation = (title, summary, formula, details = []) => ({ title, summary, formula, details })
+
+/** When ETH and USD deltas disagree in sign, explain price movement (or a generic note). */
+export function getSignMismatchNote(usdDelta, ethDelta, ethPriceChangePercent = null) {
+  const usd = Number(usdDelta)
+  const eth = Number(ethDelta)
+  if (!Number.isFinite(usd) || !Number.isFinite(eth)) return null
+  if (usd === 0 || eth === 0) return null
+  if (Math.sign(usd) === Math.sign(eth)) return null
+
+  if (ethPriceChangePercent !== null && Number.isFinite(Number(ethPriceChangePercent))) {
+    const change = Number(ethPriceChangePercent)
+    const sign = change >= 0 ? '+' : ''
+    return `ETH price changed ${sign}${change.toFixed(1)}% over this period`
+  }
+
+  return 'ETH-denominated and USD-denominated changes disagree — often due to ETH price movement over this period'
+}
 
 function buildFallbackValuationHistory(netWorth, period) {
   const start = period?.start?.slice(0, 10)
@@ -54,6 +74,138 @@ function buildFallbackValuationHistory(netWorth, period) {
   return start === end
     ? [{ date: end, value }]
     : [{ date: start, value }, { date: end, value }]
+}
+
+const formatOverviewDate = (iso) => {
+  if (!iso) return null
+  return new Intl.DateTimeFormat('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    timeZone: 'UTC',
+  }).format(new Date(iso))
+}
+
+const formatWalletAge = (iso) => {
+  if (!iso) return null
+  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000))
+  const days = Math.floor(elapsedSeconds / 86_400)
+  if (days >= 365) {
+    const years = Math.floor(days / 365)
+    return `${years} year${years === 1 ? '' : 's'}`
+  }
+  if (days >= 30) {
+    const months = Math.floor(days / 30)
+    return `${months} month${months === 1 ? '' : 's'}`
+  }
+  if (days >= 1) return `${days} day${days === 1 ? '' : 's'}`
+  return 'Less than 1 day'
+}
+
+const formatEthBalance = (value) => {
+  const amount = Number(value)
+  if (!Number.isFinite(amount)) return '—'
+  return new Intl.NumberFormat('en-US', {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 6,
+  }).format(amount)
+}
+
+const formatEthFromUsd = (usdValue, ethPrice) => {
+  const usd = Number(usdValue)
+  const price = Number(ethPrice)
+  if (!Number.isFinite(usd) || !Number.isFinite(price) || price <= 0) return '—'
+  return `${formatEthBalance(usd / price)} ETH`
+}
+
+export function enrichAddressOverviewUi(overview, portfolioInventory = null, ethPrice = null, displayMode = 'usd') {
+  if (!overview) return null
+
+  const token = { ...(overview.tokenHoldings || {}) }
+
+  if (portfolioInventory?.status === 'complete' && Number.isFinite(Number(portfolioInventory.tokenHoldingsCount))) {
+    const inventoryTokenCount = Number(portfolioInventory.tokenHoldingsCount)
+    token.totalCount = inventoryTokenCount
+    token.totalAssetsHeld = 1 + inventoryTokenCount
+    token.inventorySource = 'etherscan_inventory'
+    token.inventoryComplete = true
+    token.inventoryPending = false
+
+    if (Number.isFinite(Number(portfolioInventory.tokenValueUsd))) {
+      token.valueUsd = Number(portfolioInventory.tokenValueUsd)
+      token.valuationSource = 'etherscan_snapshot'
+    }
+    if (Number.isFinite(Number(portfolioInventory.pricedCount))) {
+      token.pricedCount = Number(portfolioInventory.pricedCount)
+    }
+    token.unpricedCount = Math.max(0, inventoryTokenCount - Number(token.pricedCount || 0))
+  } else if (portfolioInventory?.status === 'pending') {
+    token.inventoryPending = true
+    if (Number.isFinite(Number(portfolioInventory.tokenValueUsd))) {
+      token.valueUsd = Number(portfolioInventory.tokenValueUsd)
+      token.valuationSource = 'etherscan_snapshot'
+    }
+    if (Number.isFinite(Number(portfolioInventory.pricedCount))) {
+      token.pricedCount = Number(portfolioInventory.pricedCount)
+      token.unpricedCount = Math.max(0, Number(token.totalCount || 0) - token.pricedCount)
+    }
+  }
+
+  const hasTokenData = Number(token.totalCount) > 0 || Number(token.valueUsd) > 0
+  const showEth = displayMode === 'tokens' && Number(ethPrice) > 0
+
+  const formatValue = (usdAmount) => (
+    showEth ? formatEthFromUsd(usdAmount, ethPrice) : formatUsd(usdAmount)
+  )
+
+  const assetBadges = []
+  if (token.inventoryPending) {
+    assetBadges.push({ key: 'counting', label: 'Counting assets…', tone: 'muted' })
+  } else if (Number(token.totalAssetsHeld) > 0) {
+    assetBadges.push({
+      key: 'total',
+      label: `${token.totalAssetsHeld} total assets`,
+      tone: 'neutral',
+    })
+  }
+  if (Number(token.pricedCount) > 0) {
+    assetBadges.push({
+      key: 'priced',
+      label: `${token.pricedCount} priced`,
+      tone: 'accent',
+    })
+  }
+  if (Number(token.unpricedCount) > 0) {
+    assetBadges.push({
+      key: 'unpriced',
+      label: `${token.unpricedCount} unpriced`,
+      tone: 'muted',
+    })
+  }
+
+  return {
+    ethBalance: overview.ethBalance,
+    ethBalanceLabel: `${formatEthBalance(overview.ethBalance)} ETH`,
+    ethValueUsd: formatValue(overview.ethValueUsd),
+    ethValueRawUsd: overview.ethValueUsd,
+    netWorthUsd: overview.netWorthUsd != null ? formatValue(overview.netWorthUsd) : null,
+    tokenHoldingsValue: hasTokenData ? formatValue(token.valueUsd) : null,
+    tokenHoldingsRawUsd: token.valueUsd,
+    tokenHoldingsCoverage: hasTokenData && !token.inventoryPending
+      ? `${token.totalCount} held · ${token.pricedCount} priced · ${token.unpricedCount} without market price`
+      : null,
+    tokenHoldingsLabel: hasTokenData
+      ? `${formatValue(token.valueUsd)} (${token.pricedCount} of ${token.totalCount} tokens priced)`
+      : null,
+    assetBadges,
+    totalAssetsHeld: token.totalAssetsHeld,
+    pricedCount: token.pricedCount,
+    unpricedCount: token.unpricedCount,
+    inventoryPending: Boolean(token.inventoryPending),
+    firstTransaction: formatOverviewDate(overview.firstTransactionAt),
+    latestTransaction: formatOverviewDate(overview.latestTransactionAt),
+    walletAge: formatWalletAge(overview.firstTransactionAt),
+  }
 }
 
 const formatRelativeTime = (timestamp) => {
@@ -92,11 +244,25 @@ const transactionConfig = (type = '') => {
 }
 
 function buildTransactions(timeline) {
-  return timeline.map((item) => {
-    const config = transactionConfig(item.type)
+  return (timeline || []).map((item) => {
     const title = item.type.replace(/\b\w/g, (character) => character.toUpperCase())
-    const amount = item.value ? `${config.positive ? '+' : '-'}${formatNumber(item.value.amount)}` : 'Contract'
-    const crypto = item.value?.symbol || compactAddress(item.hash)
+    const amountValue = item.value?.amount
+    const hasAmount = amountValue !== null && amountValue !== undefined && Number(amountValue) > 0
+    const tokenDirection = item.value?.direction
+    const isReceive = item.type?.toLowerCase().includes('receive')
+      || tokenDirection === 'receive'
+    const config = {
+      ...transactionConfig(item.type),
+      positive: hasAmount ? isReceive : transactionConfig(item.type).positive,
+    }
+
+    let amount = ''
+    let crypto = ''
+    if (hasAmount) {
+      const sign = config.positive ? '+' : '-'
+      amount = `${sign}${formatNumber(amountValue)}`
+      crypto = item.value.symbol || 'ETH'
+    }
 
     return {
       displayTitle: title,
@@ -156,7 +322,14 @@ function buildWallet(address, analytics) {
   const density = analytics.transactionCount / days
   const activityLevel = density > 1.5 ? 'Very High' : density > 0.3 ? 'High' : 'Moderate'
   const transactionCount = formatCount(analytics.transactionCount, analytics.analysisWindow?.normalTransactionsComplete)
-  const pricedCount = analytics.valuation?.pricedAssetCount || 0
+  const pricedCount = analytics.valuation?.pricedAssetCount ?? analytics.pricedAssetCount ?? 0
+  const totalAssetCount = analytics.valuation?.totalAssetCount ?? analytics.assetCount ?? 0
+  const pricingCoveragePercent = analytics.pricingCoveragePercent
+    ?? analytics.valuation?.pricingCoveragePercent
+    ?? (totalAssetCount > 0 ? Math.round((pricedCount / totalAssetCount) * 1000) / 10 : 0)
+  const pricedOnlyDisclaimer = pricingCoveragePercent < 100
+    ? `Based on priced assets only (${pricingCoveragePercent}%)`
+    : null
   const wealthScore = Math.min(40, Math.max(0, Math.round(Math.log10(Math.max(1, analytics.netWorth)) * 6)))
   const diversityScore = pricedCount >= 10 ? 25 : pricedCount >= 5 ? 20 : pricedCount >= 3 ? 15 : pricedCount >= 1 ? 8 : 0
   const activityComponentScore = density > 1.5 ? 15 : density > 0.3 ? 10 : density > 0.05 ? 5 : 0
@@ -166,6 +339,9 @@ function buildWallet(address, analytics) {
   const valuationHistory = analytics.valuationHistory?.length
     ? analytics.valuationHistory
     : buildFallbackValuationHistory(analytics.netWorth, analytics.period)
+  const ethNet = Number(analytics.moneyFlow.received || 0) - Number(analytics.moneyFlow.spent || 0)
+  const usdNet = Number(analytics.moneyFlow.receivedUsd || 0) - Number(analytics.moneyFlow.spentUsd || 0)
+  const signMismatchNote = getSignMismatchNote(usdNet, ethNet, analytics.ethPriceChangePercent)
 
   const riskExplanation = explanation(
     'Risk Level Heuristic',
@@ -176,6 +352,7 @@ function buildWallet(address, analytics) {
       `Concentration: ${analytics.riskScore.factors?.holdingConcentration || 0}% weight on the largest asset.`,
       `Failed transactions: ${analytics.riskScore.factors?.failedTransactionRate || 0}% error rate.`,
       `Protocol diversity: ${analytics.riskScore.factors?.protocolDiversity || 0} recognized protocols used.`,
+      ...(pricedOnlyDisclaimer ? [pricedOnlyDisclaimer] : []),
     ],
   )
 
@@ -191,9 +368,37 @@ function buildWallet(address, analytics) {
     ],
   )
 
+  const largestHoldingDetail = (() => {
+    if (!largestHolding) return 'No holdings'
+    const parts = [`${largestHolding.percentage ?? 0}%`]
+    if (largestHolding.unpricedCount > 0) parts.push(`${largestHolding.unpricedCount} unpriced`)
+    return parts.join(' · ')
+  })()
+
   return {
     id: address.toLowerCase(),
+    portfolioValue: analytics.netWorth,
+    portfolioValueSource: analytics.portfolioValueSource,
+    portfolioInventory: analytics.portfolioInventory,
+    generatedAt: analytics.generatedAt,
     ethPrice: analytics.ethPrice,
+    ethPriceChangePercent: analytics.ethPriceChangePercent ?? null,
+    signMismatchNote,
+    assets: analytics.assets,
+    assetCount: totalAssetCount,
+    pricedAssetCount: pricedCount,
+    pricingCoveragePercent,
+    pricedOnlyDisclaimer,
+    transactionCount: analytics.transactionCount ?? 0,
+    transactionCountIsLowerBound: Boolean(analytics.transactionCountIsLowerBound),
+    lastActivityAt: analytics.lastActivityAt ?? null,
+    dailyTransactionCounts: analytics.dailyTransactionCounts || {},
+    dailyAnalytics: analytics.dailyAnalytics || [],
+    activityStats: analytics.activityStats || null,
+    moneyFlowStats: analytics.moneyFlowStats || null,
+    largestHolding: analytics.largestHolding,
+    valuationHistory,
+    nftCount: analytics.nftCount,
     analysisDays: analytics.period.id === 'ytd' ? 'ytd' : analytics.period.days,
     periodLabel,
     reportRange: {
@@ -201,6 +406,7 @@ function buildWallet(address, analytics) {
       to: analytics.period.end.slice(0, 10),
     },
     chipLabel: compactAddress(address),
+    addressOverview: analytics.addressOverview ?? null,
     profile: {
       name: 'Wallet Analytics',
       wallet: compactAddress(address),
@@ -213,16 +419,17 @@ function buildWallet(address, analytics) {
         ...point,
         formattedValue: formatUsd(point.value),
       })),
-      valuationLabel: `BlobLens estimated priced assets${analytics.valuation.complete === false ? ' (partial)' : ''}`,
+      valuationLabel: `Portfolio value (ETH + priced tokens)${analytics.valuation.complete === false ? ' (partial)' : ''}`,
       growth: periodLabel,
       rank: `${transactionCount} txns`,
+      coverageLabel: `${pricedCount} of ${totalAssetCount} tokens priced`,
       explanation: explanation(
-        'How period-estimated assets are calculated',
-        'This sums ETH and supported token balances estimated from BlobLens data for the selected period.',
-        'Estimated priced assets = Σ(estimated token balance × supported USD price)',
+        'How portfolio value is calculated',
+        'ETH balance is priced via ETH/USD. Known stablecoins use a $1 peg. All other held ERC-20 tokens are priced via DefiLlama’s batch price API.',
+        'Portfolio value = Σ(ETH balance × ETH price) + Σ(stablecoin balance) + Σ(ERC-20 balance × DefiLlama USD price)',
         [
-          `${analytics.valuation?.pricedAssetCount || 0} of ${analytics.valuation?.totalAssetCount || 0} discovered assets had prices.`,
-          'Source: BlobLens (BlobLens) balances, prices, and transfer history.',
+          `${pricedCount} of ${totalAssetCount} discovered assets had prices.`,
+          'Pricing sources: on-chain balances via BlockAction, DefiLlama prices.',
           analytics.valuation?.complete === false ? 'Token-transfer history hit the page cap, so this estimate is partial.' : 'Token-transfer pagination completed for the selected period.',
         ],
       ),
@@ -242,20 +449,43 @@ function buildWallet(address, analytics) {
     portfolio: {
       status: analytics.netWorth > 0 ? 'Active' : 'Empty',
       score: portfolioScore,
-      scoreExplanation: explanation('Portfolio Score', 'A composite score based on wealth, diversification, activity, and risk.', 'Wealth(≤40) + Diversity(≤25) + Activity(≤15) + Risk(≤20), capped at 99', [`Current score: ${portfolioScore}/100. Wealth: ${wealthScore}/40, Diversity: ${diversityScore}/25, Activity: ${activityComponentScore}/15, Risk: ${riskBonus}/20.`]),
+      scoreDisclaimer: pricedOnlyDisclaimer,
+      scoreExplanation: explanation(
+        'Portfolio Score',
+        'A composite score based on wealth, diversification, activity, and risk.',
+        'Wealth(≤40) + Diversity(≤25) + Activity(≤15) + Risk(≤20), capped at 99',
+        [
+          `Current score: ${portfolioScore}/100. Wealth: ${wealthScore}/40, Diversity: ${diversityScore}/25, Activity: ${activityComponentScore}/15, Risk: ${riskBonus}/20.`,
+          ...(pricedOnlyDisclaimer ? [pricedOnlyDisclaimer] : []),
+        ],
+      ),
       metrics: [
         {
           label: 'Largest Holding',
           value: largestHolding?.symbol || 'None',
-          detail: largestHolding ? formatUsd(largestHolding.usdValue) : 'No priced holdings',
+          detail: largestHolding
+            ? `${formatUsd(largestHolding.usdValue)} · ${largestHoldingDetail}`
+            : 'No priced holdings',
           icon: 'wallet',
           primary: true,
-          explanation: explanation('Largest priced holding', 'The priced asset with the highest calculated USD value in this estimate.', 'Largest holding = max(balance × USD price)', [`It represents ${largestHolding?.percentage || 0}% of the selected period estimate.`]),
+          explanation: explanation(
+            'Largest holding',
+            'The highest-value priced asset, with allocation diluted when unpriced holdings exist so the share is not shown as 100% of an incomplete book.',
+            'Share = priced share × (priced assets / all held assets) when unpriced tokens exist',
+            [
+              `It represents ${largestHolding?.percentage || 0}% across ${largestHolding?.totalAssetCount || totalAssetCount} held assets.`,
+              largestHolding?.unpricedCount > 0
+                ? `${largestHolding.unpricedCount} held assets have no market price.`
+                : 'All held assets in this estimate have prices.',
+            ],
+          ),
         },
         {
           label: 'Risk Level',
           value: analytics.riskScore.level,
-          detail: `${analytics.riskScore.score}/100 heuristic score`,
+          detail: pricedOnlyDisclaimer
+            ? `${analytics.riskScore.score}/100 · ${pricedOnlyDisclaimer}`
+            : `${analytics.riskScore.score}/100 heuristic score`,
           icon: 'nft',
           explanation: riskExplanation,
         },
@@ -268,13 +498,13 @@ function buildWallet(address, analytics) {
         },
         {
           label: 'Discovered Assets',
-          value: Number(analytics.assetCount ?? analytics.valuation?.totalAssetCount ?? 0).toLocaleString(),
-          detail: analytics.valuation.complete ? 'Transfer scan completed' : 'Partial transfer scan',
+          value: Number(totalAssetCount).toLocaleString(),
+          detail: `${pricedCount} priced · ${Math.max(0, totalAssetCount - pricedCount)} unpriced`,
           icon: 'collection',
           explanation: explanation(
             'Discovered Assets',
-            'The total number of unique ERC-20 and ERC-721 tokens identified in the wallet\'s history.',
-            'Discovered assets = unique token contracts with transfer history',
+            'The total number of unique ERC-20 tokens with a positive balance from the wallet’s transfer history, plus native ETH.',
+            'Discovered assets = unique token contracts with positive balance + ETH',
             [
               'Scans incoming and outgoing token transfers for the selected period.',
               analytics.valuation.complete ? 'Full transfer scan was completed.' : 'Partial scan (hit the page cap).',
@@ -284,10 +514,22 @@ function buildWallet(address, analytics) {
       ],
     },
     identity: [
-      { label: 'Portfolio Score', value: `${portfolioScore}/100`, description: 'Based on the selected period asset estimate', icon: 'portfolio', tone: 'gold' },
+      {
+        label: 'Portfolio Score',
+        value: `${portfolioScore}/100`,
+        description: pricedOnlyDisclaimer || 'Based on priced assets and activity',
+        icon: 'portfolio',
+        tone: 'gold',
+      },
       { label: 'Transactions', value: transactionCount, description: `Activity during ${periodLabel.toLowerCase()}`, icon: 'risk', tone: 'blue' },
       { label: 'NFT Activity', value: analytics.personalityFactors?.nftTransfers?.toLocaleString() || '0', description: `Transfers during ${periodLabel.toLowerCase()}`, icon: 'age', tone: 'purple' },
-      { label: 'Data Source', value: 'BlobLens', description: analytics.valuation.complete ? 'Transfer scan completed' : 'Partial transfer scan', icon: 'kyc', tone: 'green' },
+      {
+        label: 'Pricing Coverage',
+        value: `${pricedCount}/${totalAssetCount}`,
+        description: `${pricingCoveragePercent}% of held tokens priced`,
+        icon: 'kyc',
+        tone: 'green',
+      },
     ],
     personality: {
       title: primaryPersonality?.label || 'New Wallet',
@@ -297,8 +539,23 @@ function buildWallet(address, analytics) {
     },
     flow: {
       periodLabel,
-      received: { value: `+${formatNumber(analytics.moneyFlow.received)} ETH`, usd: analytics.moneyFlow.receivedUsd ? formatUsd(analytics.moneyFlow.receivedUsd) : null, percent: receivedPercent },
-      spent: { value: `-${formatNumber(analytics.moneyFlow.spent)} ETH`, usd: analytics.moneyFlow.spentUsd ? formatUsd(analytics.moneyFlow.spentUsd) : null, percent: spentPercent },
+      ethNet,
+      usdNet,
+      signMismatchNote,
+      received: {
+        value: Number(analytics.moneyFlow.received) > 0 ? `+${formatNumber(analytics.moneyFlow.received)} ETH` : '—',
+        usd: analytics.moneyFlow.receivedUsd != null ? formatUsd(analytics.moneyFlow.receivedUsd) : null,
+        percent: receivedPercent,
+        amount: Number(analytics.moneyFlow.received || 0),
+        usdAmount: Number(analytics.moneyFlow.receivedUsd || 0),
+      },
+      spent: {
+        value: Number(analytics.moneyFlow.spent) > 0 ? `-${formatNumber(analytics.moneyFlow.spent)} ETH` : '—',
+        usd: analytics.moneyFlow.spentUsd != null ? formatUsd(analytics.moneyFlow.spentUsd) : null,
+        percent: spentPercent,
+        amount: Number(analytics.moneyFlow.spent || 0),
+        usdAmount: Number(analytics.moneyFlow.spentUsd || 0),
+      },
       categories: [
         { label: 'Incoming', value: `${analytics.moneyFlow.incomingCount} txns`, percent: receivedPercent, tone: 'mint', icon: '99_740.svg' },
         { label: 'Outgoing', value: `${analytics.moneyFlow.outgoingCount} txns`, percent: spentPercent, tone: 'red', icon: '99_756.svg' },
@@ -306,13 +563,36 @@ function buildWallet(address, analytics) {
     },
     transactions: buildTransactions(analytics.timeline),
     highlights: [
-      { label: 'Largest Holding', value: largestHolding?.symbol || 'None', detail: `${largestHolding?.percentage || 0}%`, icon: 'holding', tone: 'violet' },
-      { label: 'Money Received', value: analytics.moneyFlow.receivedUsd ? formatUsd(analytics.moneyFlow.receivedUsd) : `${formatNumber(analytics.moneyFlow.received)} ETH`, detail: `${analytics.moneyFlow.incomingCount} transfers`, icon: 'protocol', tone: 'pink' },
-      { label: 'Money Spent', value: analytics.moneyFlow.spentUsd ? formatUsd(analytics.moneyFlow.spentUsd) : `${formatNumber(analytics.moneyFlow.spent)} ETH`, detail: `${analytics.moneyFlow.outgoingCount} transfers`, icon: 'chain', tone: 'blue' },
+      { label: 'Largest Holding', value: largestHolding?.symbol || 'None', detail: largestHoldingDetail, icon: 'holding', tone: 'violet' },
+      {
+        label: 'Money Received',
+        value: analytics.moneyFlow.receivedUsd != null
+          ? formatUsd(analytics.moneyFlow.receivedUsd)
+          : (Number(analytics.moneyFlow.received) > 0 ? `${formatNumber(analytics.moneyFlow.received)} ETH` : '—'),
+        detail: `${analytics.moneyFlow.incomingCount} transfers`,
+        icon: 'protocol',
+        tone: 'pink',
+      },
+      {
+        label: 'Money Spent',
+        value: analytics.moneyFlow.spentUsd != null
+          ? formatUsd(analytics.moneyFlow.spentUsd)
+          : (Number(analytics.moneyFlow.spent) > 0 ? `${formatNumber(analytics.moneyFlow.spent)} ETH` : '—'),
+        detail: `${analytics.moneyFlow.outgoingCount} transfers`,
+        icon: 'chain',
+        tone: 'blue',
+      },
       { label: 'Transactions', value: transactionCount, detail: periodLabel.toLowerCase(), icon: 'transactions', tone: 'green' },
     ],
     insights: [
-      { label: 'Risk Level', value: analytics.riskScore.level, suffix: `${analytics.riskScore.score}/100`, explanation: riskExplanation },
+      {
+        label: 'Risk Level',
+        value: analytics.riskScore.level,
+        suffix: pricedOnlyDisclaimer
+          ? `${analytics.riskScore.score}/100 · ${pricedOnlyDisclaimer}`
+          : `${analytics.riskScore.score}/100`,
+        explanation: riskExplanation,
+      },
       { label: 'Recognized Protocol', value: analytics.mostUsedProtocol.name, suffix: `${analytics.mostUsedProtocol.interactionCount} interactions`, explanation: protocolExplanation },
     ],
     nftBreakdown: {
@@ -320,7 +600,6 @@ function buildWallet(address, analytics) {
       outgoing: analytics.personalityFactors?.nftOutgoing || 0,
       total: analytics.personalityFactors?.nftTransfers || 0,
     },
-    pricedAssetCount: analytics.pricedAssetCount ?? analytics.valuation?.pricedAssetCount ?? 0,
     holdings: (() => {
       const rawAssets = analytics.assets || []
       const totalPriced = rawAssets.reduce((sum, a) => (a.priceAvailable ? sum + a.usdValue : sum), 0)
@@ -330,7 +609,7 @@ function buildWallet(address, analytics) {
         rawUsdValue: asset.usdValue,
         balance: asset.priceAvailable ? formatNumber(asset.balance) : asset.rawBalance ?? asset.balance,
         usdValue: asset.priceAvailable ? formatUsd(asset.usdValue) : null,
-        percentage: totalPriced > 0 && asset.priceAvailable ? Math.round((asset.usdValue / totalPriced) * 100) : 0,
+        percentage: asset.percentage ?? (totalPriced > 0 && asset.priceAvailable ? Math.round((asset.usdValue / totalPriced) * 100) : 0),
         displayBalance: !asset.priceAvailable && asset.rawBalance ? asset.rawBalance : formatNumber(asset.balance),
       }))
     })(),
@@ -370,6 +649,17 @@ async function getWalletByAddress(address, analysisPeriod = 'ytd', customRange =
   return buildWallet(normalizedAddress, data)
 }
 
+async function getPortfolioInventory(address) {
+  const response = await apiFetch(`${API_BASE_URL}/api/wallet/${address}/inventory`)
+  const data = await response.json().catch(() => null)
+
+  if (!response.ok) {
+    throw new Error(data?.message || 'Unable to load token holdings inventory.')
+  }
+
+  return data
+}
+
 async function downloadTransactionReport(address, from, to) {
   const query = new URLSearchParams({ from, to })
   const response = await apiFetch(`${API_BASE_URL}/api/report/${address}?${query}`, {
@@ -398,6 +688,7 @@ async function downloadTransactionReport(address, from, to) {
 
 export const walletService = {
   downloadTransactionReport,
+  getPortfolioInventory,
   getWalletByAddress,
   listExampleWallets: () => EXAMPLE_WALLETS,
 }

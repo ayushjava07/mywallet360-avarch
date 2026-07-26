@@ -1,14 +1,16 @@
 import { useState } from 'react'
 import { Activity } from './components/dashboard/Activity'
 import { BalanceCard } from './components/dashboard/BalanceCard'
+import { AnalysisPeriodBar } from './components/dashboard/AnalysisPeriodBar'
 import { DashboardBar } from './components/dashboard/DashboardBar'
 import { DashboardLoader } from './components/dashboard/DashboardLoader'
-import { IdentityCard } from './components/dashboard/IdentityCard'
 import { Insights } from './components/dashboard/Insights'
 import { MoneyFlowTab } from './components/dashboard/MoneyFlowTab'
-import { PortfolioCard } from './components/dashboard/PortfolioCard'
+import { PortfolioChart } from './components/dashboard/PortfolioChart'
 import { PortfolioHoldings } from './components/dashboard/PortfolioHoldings'
-import { Summary } from './components/dashboard/Summary'
+import { TransactionHeatmap } from './components/dashboard/TransactionHeatmap'
+import { TransactionAnalytics } from './components/dashboard/TransactionAnalytics'
+import { WalletHealth } from './components/dashboard/WalletHealth'
 import { WalletPersonality } from './components/dashboard/WalletPersonality'
 import { BottomNav } from './components/layout/BottomNav'
 import { Header } from './components/layout/Header'
@@ -74,55 +76,89 @@ export default function App() {
 
       {wallet ? (
         <>
-          {activeTab === 'Overview' ? (
-            <main className={`grid gap-9 max-[700px]:gap-6 ${isLoading ? 'dashboard-loading' : 'dashboard-ready'}`} key={wallet.id}>
+          {activeTab === 'Overview' && (
+            <main className={`grid gap-9 max-[700px]:gap-6 ${isLoading ? 'dashboard-loading' : 'dashboard-ready'}`} key={`overview-${wallet.id}`}>
               {isLoading && <DashboardLoader />}
               <DashboardBar
+                displayMode={displayMode}
+                onDisplayModeChange={setDisplayMode}
+              />
+              <BalanceCard
+                wallet={wallet}
+                error={error}
+                displayMode={displayMode}
+                ethPrice={wallet.ethPrice}
+              />
+              <TransactionHeatmap
+                dailyTransactionCounts={wallet.dailyTransactionCounts}
+                activityStats={wallet.activityStats}
+              />
+              <TransactionAnalytics
+                dailyAnalytics={wallet.dailyAnalytics}
+                addressLabel={wallet.profile?.wallet || wallet.chipLabel}
+              />
+              <AnalysisPeriodBar
                 periods={ANALYSIS_PERIODS}
                 selectedDays={analysisDays}
                 customRange={customRange}
                 pendingDays={pendingAnalysisDays}
                 isLoading={isPeriodLoading}
                 onPeriodChange={selectAnalysisPeriod}
-                displayMode={displayMode}
-                onDisplayModeChange={setDisplayMode}
+                scopeHint="Period applies to: Recent Activity"
               />
-              <div className="dashboard-grid dashboard-grid--top grid gap-6 min-[900px]:grid-cols-2 min-[1180px]:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]">
-                <BalanceCard
-                  balance={wallet.balance}
-                  error={error}
-                  displayMode={displayMode}
-                  ethPrice={wallet.ethPrice}
-                />
-                <PortfolioCard portfolio={wallet.portfolio} />
-                <IdentityCard stats={wallet.identity} />
-                <WalletPersonality personality={wallet.personality} />
-              </div>
-              <PortfolioHoldings
-                holdings={wallet.holdings}
-                totalValue={wallet.balance?.value}
-                valuationHistory={wallet.balance?.history}
-                periodLabel={wallet.periodLabel}
-                isLoading={isLoading}
-                displayMode={displayMode}
-                ethPrice={wallet.ethPrice}
-              />
-              <Summary flow={wallet.flow} />
               <Activity
-                walletAddress={wallet.id}
                 transactions={wallet.transactions}
-                highlights={wallet.highlights}
                 periodLabel={wallet.periodLabel}
-                reportRange={wallet.reportRange}
               />
-              <Insights insights={wallet.insights} />
             </main>
-          ) : (
-            <main key={`flow-${wallet.id}`} className={isLoading ? 'dashboard-loading' : 'dashboard-ready'}>
+          )}
+
+          {activeTab === 'Money Flow' && (
+            <main key={`flow-${wallet.id}`} className={`grid gap-9 max-[700px]:gap-6 ${isLoading ? 'dashboard-loading' : 'dashboard-ready'}`}>
               {isLoading && <DashboardLoader />}
+              <AnalysisPeriodBar
+                periods={ANALYSIS_PERIODS}
+                selectedDays={analysisDays}
+                customRange={customRange}
+                pendingDays={pendingAnalysisDays}
+                isLoading={isPeriodLoading}
+                onPeriodChange={selectAnalysisPeriod}
+                scopeHint="Period applies to: Money Flow & transactions"
+              />
               <MoneyFlowTab wallet={wallet} />
             </main>
           )}
+
+          {activeTab === 'Portfolio' && (
+            <main className={`grid gap-9 max-[700px]:gap-6 ${isLoading ? 'dashboard-loading' : 'dashboard-ready'}`} key={`portfolio-${wallet.id}`}>
+              {isLoading && <DashboardLoader />}
+              <DashboardBar
+                displayMode={displayMode}
+                onDisplayModeChange={setDisplayMode}
+              />
+              <PortfolioHoldings
+                holdings={wallet.holdings}
+                valuationHistory={wallet.balance?.history}
+                isLoading={isLoading}
+                displayMode={displayMode}
+                ethPrice={wallet.ethPrice}
+                wallet={wallet}
+              />
+              <PortfolioChart
+                valuationHistory={wallet.valuationHistory}
+              />
+            </main>
+          )}
+
+          {activeTab === 'Insights' && (
+            <main className={`grid gap-9 max-[700px]:gap-6 ${isLoading ? 'dashboard-loading' : 'dashboard-ready'}`} key={`insights-${wallet.id}`}>
+              {isLoading && <DashboardLoader />}
+              <Insights insights={wallet.insights} wallet={wallet} periodLabel={wallet.periodLabel} />
+              <WalletHealth wallet={wallet} />
+              <WalletPersonality personality={wallet.personality} />
+            </main>
+          )}
+
           <BottomNav active={activeTab} onChange={setActiveTab} />
         </>
       ) : (

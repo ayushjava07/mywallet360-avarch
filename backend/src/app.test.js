@@ -1,9 +1,19 @@
 import "dotenv/config";
-process.env.NODE_ENV = "test";
 import assert from "node:assert/strict";
 import test from "node:test";
 import axios from "axios";
-import app from "./app.js";
+
+// dotenv may overwrite NODE_ENV from .env — force test mode before loading app/middleware.
+process.env.NODE_ENV = "test";
+
+const { default: app } = await import("./app.js");
+const { clearWalletServiceCaches } = await import("./services/blockaction.service.js");
+const { clearProtocolCache } = await import("./services/protocol-resolution.service.js");
+
+function resetTestCaches() {
+  clearWalletServiceCaches();
+  clearProtocolCache();
+}
 
 async function withServer(run) {
   const server = app.listen(0);
@@ -51,12 +61,18 @@ test("rejects unsupported analysis periods before calling upstream services", as
 });
 
 test("accepts YTD as the default analysis period before calling upstream services", async () => {
+  resetTestCaches();
   await withServer(async (baseUrl) => {
     const response = await fetch(`${baseUrl}/api/wallet/0x742d35Cc6634C0532925a3b844Bc454e4438f44e`);
     const body = await response.json();
 
-    assert.equal(response.status, 500);
-    assert.ok(body.code === "INTERNAL_SERVER_ERROR" || body.code === "ENOTFOUND");
+    // Without usable upstream credentials this fails; with a configured BlockAction URL it may succeed.
+    assert.ok([200, 500].includes(response.status), `unexpected status ${response.status}`);
+    if (response.status === 500) {
+      assert.ok(body.code === "INTERNAL_SERVER_ERROR" || body.code === "ENOTFOUND");
+    } else {
+      assert.equal(body.period?.id, "ytd");
+    }
   });
 });
 
@@ -106,6 +122,7 @@ test("returns a consistent response for unknown endpoints", async () => {
 });
 
 test("wallet profile API endpoint returns accurate protocol counts and types", async () => {
+  resetTestCaches();
   const originalGet = axios.get;
 
   axios.get = async (url, options) => {
@@ -123,20 +140,29 @@ test("wallet profile API endpoint returns accurate protocol counts and types", a
         { to: "0x6666666666666666666666666666666666666666", from: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e", isError: "0", input: "0xabcdef", hash: "0x2", timeStamp: "1718000002", value: "0" }
       ] } };
     }
-    if (module === "account" && (action === "txlistinternal" || action === "tokentx" || action === "tokennfttx")) {
+    if (module === "account" && (action === "txlistinternal" || action === "tokentx" || action === "tokennfttx" || action === "addresstokenbalance")) {
       return { data: { status: "1", message: "OK", result: [] } };
     }
     if (module === "contract" && action === "getsourcecode") {
-      if (params.address === "0x5555555555555555555555555555555555555555") {
+      if (String(params.address || "").toLowerCase() === "0x5555555555555555555555555555555555555555") {
         return { data: { status: "1", message: "OK", result: [{ ContractName: "MockProtocolA" }] } };
       }
       return { data: { status: "1", message: "OK", result: [] } };
+    }
+    if (module === "stats" && action === "ethprice") {
+      return { data: { status: "1", message: "OK", result: { ethusd: "2000" } } };
+    }
+    if (module === "block" && action === "getblocknobytime") {
+      return { data: { status: "1", message: "OK", result: "1234567" } };
     }
     if (url.includes("openchain.xyz")) {
       throw new Error("OpenChain simulation error");
     }
     if (url.includes("alchemy.com") || url.includes("etherscan")) {
       return { data: { result: [] } };
+    }
+    if (url.includes("llama.fi")) {
+      return { data: { coins: {} } };
     }
     throw new Error(`Unhandled mock request for ${url}`);
   };
@@ -160,6 +186,7 @@ test("wallet profile API endpoint returns accurate protocol counts and types", a
 });
 
 test("wallet API endpoint returns accurate period IDs for all supported periods", async () => {
+  resetTestCaches();
   const originalGet = axios.get;
 
   axios.get = async (url, options) => {
@@ -173,14 +200,14 @@ test("wallet API endpoint returns accurate period IDs for all supported periods"
     if (module === "account" && action === "balance") {
       return { data: { status: "1", message: "OK", result: "1000000000000000000" } };
     }
-    if (module === "account" && (action === "txlist" || action === "txlistinternal" || action === "tokentx" || action === "tokennfttx")) {
+    if (module === "account" && (action === "txlist" || action === "txlistinternal" || action === "tokentx" || action === "tokennfttx" || action === "addresstokenbalance")) {
       return { data: { status: "1", message: "OK", result: [] } };
     }
     if (module === "stats" && action === "ethprice") {
       return { data: { status: "1", message: "OK", result: { ethusd: "2000" } } };
     }
-    if (url.includes("alchemy.com") || url.includes("etherscan")) {
-      return { data: { result: [] } };
+    if (url.includes("alchemy.com") || url.includes("etherscan") || url.includes("llama.fi")) {
+      return { data: { result: [], coins: {} } };
     }
     throw new Error(`Unhandled mock request for ${url}`);
   };

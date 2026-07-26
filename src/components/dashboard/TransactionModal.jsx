@@ -59,7 +59,7 @@ export function TransactionModal({ tx, onClose, onNoteSave }) {
   })
   const [isSaved, setIsSaved] = useState(false)
 
-  const PRESET_TAGS = ['Salary', 'Donation', 'Transfer', 'Investment', 'Expense', 'Tax-deductible']
+  const PRESET_TAGS = ['Salary', 'Airdrop', 'Bridge', 'Swap', 'Payroll', 'Investment', 'Donation', 'Gift', 'Gas Refund', 'Friend', 'Expense']
 
   const handleSaveNote = (newNote) => {
     try {
@@ -210,22 +210,21 @@ export function TransactionModal({ tx, onClose, onNoteSave }) {
             >
               {isSaved ? 'Saved ✔' : 'Save'}
             </button>
-          </div>
-          <div className="tx-modal__presets">
-            {PRESET_TAGS.map((tag) => (
-              <button
-                key={tag}
-                type="button"
-                className={`tx-modal__preset-chip ${noteInput === tag ? 'active' : ''}`}
-                onClick={() => {
-                  setNoteInput(tag)
-                  handleSaveNote(tag)
-                }}
-              >
-                {tag}
-              </button>
-            ))}
-          </div>
+          </div>            <div className="tx-modal__presets flex flex-wrap gap-1.5">
+              {PRESET_TAGS.map((tag) => (
+                <button
+                  key={tag}
+                  type="button"
+                  className={`tx-modal__preset-chip ${noteInput === tag ? 'active' : ''}`}
+                  onClick={() => {
+                    setNoteInput(tag)
+                    handleSaveNote(tag)
+                  }}
+                >
+                  {tag}
+                </button>
+              ))}
+            </div>
         </div>
 
         <div className="tx-modal__section tx-modal__explanation">

@@ -2,7 +2,6 @@ import { useState } from 'react'
 import { MaterialIcon } from '../common/MaterialIcon'
 import { Icon } from '../common/Icon'
 import { MetricExplainer } from '../common/MetricExplainer'
-import { highlightIcons } from '../../config/dashboard'
 import { PieChart, Pie, Cell, ResponsiveContainer } from 'recharts'
 import { TransactionModal } from './TransactionModal'
 
@@ -11,15 +10,24 @@ function formatPeriod(periodLabel) {
   return (periodLabel || d.toLocaleString('en-US', { month: 'long', year: 'numeric' })).toUpperCase()
 }
 
+function formatMonthLabel(key) {
+  if (!key) return '—'
+  const [y, m] = key.split('-')
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+  return `${months[parseInt(m, 10) - 1]} ${y}`
+}
+
 function netGrowthValue(flow) {
-  if (flow.received.usd && flow.spent.usd) {
-    const recv = parseFloat(flow.received.usd.replace(/[^0-9.-]/g, '')) || 0
-    const spent = parseFloat(flow.spent.usd.replace(/[^0-9.-]/g, '')) || 0
-    return { value: recv - spent, symbol: '$', isUsd: true }
+  if (flow.usdNet != null || (flow.received.usdAmount != null && flow.spent.usdAmount != null)) {
+    const value = flow.usdNet != null
+      ? Number(flow.usdNet)
+      : Number(flow.received.usdAmount || 0) - Number(flow.spent.usdAmount || 0)
+    return { value, symbol: '$', isUsd: true }
   }
-  const recv = parseFloat(flow.received.value.replace(/[^0-9.-]/g, '')) || 0
-  const spent = parseFloat(flow.spent.value.replace(/[^0-9.-]/g, '')) || 0
-  return { value: recv - spent, symbol: 'ETH', isUsd: false }
+  const value = flow.ethNet != null
+    ? Number(flow.ethNet)
+    : Number(flow.received.amount || 0) - Number(flow.spent.amount || 0)
+  return { value, symbol: 'ETH', isUsd: false }
 }
 
 function getDateGroup(meta) {
@@ -34,14 +42,16 @@ function getDateGroup(meta) {
 }
 
 export function MoneyFlowTab({ wallet }) {
-  const { balance, flow, portfolio, transactions, highlights = [], nftBreakdown } = wallet
+  const { balance, flow, portfolio, transactions, nftBreakdown, moneyFlowStats, pricedOnlyDisclaimer } = wallet
   const portfolioMetrics = portfolio.metrics || []
   const score = portfolio.score || 0
   const dashArray = `${Math.min(score, 100)} ${100 - Math.min(score, 100)}`
+  const flowStats = moneyFlowStats
+  const signMismatchNote = flow.signMismatchNote || wallet.signMismatchNote
 
   const tip = (() => {
-    const recv = parseFloat(flow.received.value.replace(/[^0-9.-]/g, '')) || 0
-    const spent = parseFloat(flow.spent.value.replace(/[^0-9.-]/g, '')) || 0
+    const recv = Number(flow.received.amount ?? 0)
+    const spent = Number(flow.spent.amount ?? 0)
     if (spent === 0) return 'All income retained this period. Excellent saving!'
     const ratio = Math.round(recv / spent)
     if (ratio >= 2) return `Great job! You received ${ratio}x more than you spent this period.`
@@ -165,33 +175,95 @@ export function MoneyFlowTab({ wallet }) {
           </div>
           <div className="space-y-1">
             <p className="text-sm max-[480px]:text-xs font-medium text-slate-500 dark:text-slate-400">Net Growth</p>
-            {(() => { const net = netGrowthValue(flow); return (
-              <>
-                <h2 className="text-5xl max-[480px]:text-3xl font-bold tracking-tight text-teal-400">
-                  {net.value >= 0 ? '+' : ''}{net.isUsd ? new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', notation: Math.abs(net.value) >= 1_000_000 ? 'compact' : 'standard' }).format(net.value) : `${net.value.toLocaleString()} ETH`}
-                </h2>
-                {net.isUsd && (
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    {netGrowthValue({ received: { value: flow.received.value, usd: null }, spent: { value: flow.spent.value, usd: null } }).value >= 0 ? '+' : ''}{netGrowthValue({ received: { value: flow.received.value, usd: null }, spent: { value: flow.spent.value, usd: null } }).value.toLocaleString()} ETH
-                  </p>
-                )}
-              </>
-            )})()}
+            {(() => {
+              const net = netGrowthValue(flow)
+              const ethNet = Number(flow.ethNet ?? 0)
+              return (
+                <>
+                  <h2 className="text-5xl max-[480px]:text-3xl font-bold tracking-tight text-teal-400">
+                    {net.value >= 0 ? '+' : ''}{net.isUsd ? new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', notation: Math.abs(net.value) >= 1_000_000 ? 'compact' : 'standard' }).format(net.value) : `${net.value.toLocaleString()} ETH`}
+                  </h2>
+                  {net.isUsd && (
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      {ethNet >= 0 ? '+' : ''}{ethNet.toLocaleString()} ETH
+                    </p>
+                  )}
+                  {signMismatchNote && (
+                    <p className="text-xs text-amber-600 dark:text-amber-400 mt-1.5" title={signMismatchNote}>
+                      {signMismatchNote}
+                    </p>
+                  )}
+                </>
+              )
+            })()}
           </div>
           <div className="grid grid-cols-2 gap-8 max-[480px]:gap-4 mt-6">
             <div className="space-y-1">
               <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">Received</p>
               <p className="text-2xl font-bold text-teal-400">{flow.received.usd || flow.received.value}</p>
-              {flow.received.usd && <p className="text-xs text-slate-400 dark:text-slate-500">{flow.received.value}</p>}
+              {flow.received.usd && flow.received.value !== '—' && (
+                <p className="text-xs text-slate-400 dark:text-slate-500">{flow.received.value}</p>
+              )}
             </div>
             <div className="space-y-1">
               <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">Spent</p>
               <p className="text-2xl font-bold text-rose-500">{flow.spent.usd || flow.spent.value}</p>
-              {flow.spent.usd && <p className="text-xs text-slate-400 dark:text-slate-500">{flow.spent.value}</p>}
+              {flow.spent.usd && flow.spent.value !== '—' && (
+                <p className="text-xs text-slate-400 dark:text-slate-500">{flow.spent.value}</p>
+              )}
             </div>
           </div>
         </MetricExplainer>
       </div>
+
+      {/* Flow Stats — from full-period backend aggregates, not the 20-tx timeline */}
+      {flowStats && (
+        <div className="apple-card p-5 max-[480px]:p-3.5">
+          <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-[0.2em] mb-4 block">Flow Statistics</span>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="p-3 rounded-xl bg-gray-50 dark:bg-white/[0.04]">
+              <span className="text-[9px] font-bold text-slate-500 uppercase tracking-wider block mb-1">Average Transfer</span>
+              <strong className="text-lg font-bold">
+                {flowStats.avgTransfer > 0 ? `${Number(flowStats.avgTransfer).toFixed(4)} ETH` : '—'}
+              </strong>
+            </div>
+            <div className="p-3 rounded-xl bg-gray-50 dark:bg-white/[0.04]">
+              <span className="text-[9px] font-bold text-slate-500 uppercase tracking-wider block mb-1">Largest Transfer</span>
+              <strong className="text-lg font-bold">
+                {flowStats.largestTransfer > 0 ? `${Number(flowStats.largestTransfer).toFixed(4)} ETH` : '—'}
+              </strong>
+            </div>
+            <div className="p-3 rounded-xl bg-gray-50 dark:bg-white/[0.04]">
+              <span className="text-[9px] font-bold text-slate-500 uppercase tracking-wider block mb-1">Most Active Month</span>
+              <strong className="text-lg font-bold">{formatMonthLabel(flowStats.mostActiveMonth)}</strong>
+              <span className="text-[10px] text-slate-400">{flowStats.mostActiveMonthCount || 0} txns</span>
+            </div>
+            <div className="p-3 rounded-xl bg-gray-50 dark:bg-white/[0.04]">
+              <span className="text-[9px] font-bold text-slate-500 uppercase tracking-wider block mb-1">Most Active Week</span>
+              <strong className="text-lg font-bold">{flowStats.mostActiveWeek ? new Date(`${flowStats.mostActiveWeek}T00:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }) : '—'}</strong>
+              <span className="text-[10px] text-slate-400">{flowStats.mostActiveWeekCount || 0} txns</span>
+            </div>
+          </div>
+          {flowStats.incomingCount + flowStats.outgoingCount > 0 && (
+            <div className="mt-4 pt-4 border-t border-gray-100 dark:border-white/10">
+              <div className="flex items-center justify-between text-sm mb-2">
+                <span className="text-slate-500">Incoming vs Outgoing</span>
+                <span className="text-slate-400 text-[11px]">{flowStats.incomingCount} in / {flowStats.outgoingCount} out</span>
+              </div>
+              <div className="h-2 rounded-full bg-gray-100 dark:bg-white/[0.06] overflow-hidden flex">
+                <div
+                  className="h-full rounded-l-full bg-emerald-400 transition-all"
+                  style={{ width: `${(flowStats.incomingCount / Math.max(flowStats.incomingCount + flowStats.outgoingCount, 1)) * 100}%` }}
+                />
+                <div
+                  className="h-full rounded-r-full bg-rose-400 transition-all"
+                  style={{ width: `${(flowStats.outgoingCount / Math.max(flowStats.incomingCount + flowStats.outgoingCount, 1)) * 100}%` }}
+                />
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Portfolio Snapshot */}
       <MetricExplainer
@@ -213,6 +285,9 @@ export function MoneyFlowTab({ wallet }) {
             <div>
               <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-[0.2em] mb-1.5">Portfolio Snapshot</p>
               <h3 className="text-4xl font-bold tracking-tight text-slate-900 dark:text-slate-100 max-[480px]:text-3xl">{balance.value}</h3>
+              {balance.coverageLabel && (
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">{balance.coverageLabel}</p>
+              )}
             </div>
             <MetricExplainer
               as="div"
@@ -223,6 +298,11 @@ export function MoneyFlowTab({ wallet }) {
               <div className="inline-flex items-center px-4 py-2 rounded-2xl bg-teal-400/10 border border-teal-400/20 backdrop-blur-sm">
                 <p className="text-xl font-bold text-teal-400">{score}<span className="text-xs text-teal-400/50 ml-0.5">/100</span></p>
               </div>
+              {(portfolio.scoreDisclaimer || pricedOnlyDisclaimer) && (
+                <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1.5 max-w-[18ch] ml-auto max-[480px]:ml-0">
+                  {portfolio.scoreDisclaimer || pricedOnlyDisclaimer}
+                </p>
+              )}
             </MetricExplainer>
           </div>
           <div className="flex items-center gap-3 text-sm max-[480px]:text-xs font-medium pt-3 border-t border-gray-100 dark:border-white/10">
@@ -411,80 +491,58 @@ export function MoneyFlowTab({ wallet }) {
       {/* Money Journey */}
       <section className="min-[900px]:px-0.5">
         {groupedTransactions.length > 0 ? (
-          <div className="activity-layout grid grid-cols-[minmax(0,1.65fr)_minmax(300px,.9fr)] items-stretch gap-[18px] max-[1050px]:grid-cols-[minmax(0,1.35fr)_minmax(270px,.85fr)] max-[1050px]:gap-[14px] max-[899px]:grid-cols-1">
-            <div className="card activity-feed rounded-3xl border-0 p-[22px] max-[1050px]:p-[18px] max-[480px]:rounded-[20px] max-[480px]:p-3.5">
-              <div className="activity-card__heading flex min-h-[35px] items-center justify-between gap-4">
-                <div className="grid gap-[3px]">
-                  <span>{flow.periodLabel}</span>
-                  <h2>Recent Activity</h2>
-                </div>
-              </div>
-              <div className="transaction-list mt-3 grid grid-cols-1 gap-[3px]">
-                {groupedTransactions.map((group) => (
-                  <div key={group.date}>
-                    <div className="px-1 pt-2 pb-1">
-                      <span className="text-[9px] font-bold text-slate-400 uppercase tracking-[0.15em]">{group.date}</span>
-                    </div>
-                    {group.items.map((tx) => (
-                      <article
-                        key={tx.title}
-                        className={`transaction transaction--${tx.tone} relative grid min-w-0 cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto_minmax(72px,auto)] items-center gap-[11px] rounded-[14px] border-0 bg-transparent p-[13px_11px] max-[1050px]:grid-cols-[auto_minmax(0,1fr)_auto] max-[700px]:grid-cols-[auto_minmax(0,1fr)] max-[480px]:gap-[9px] max-[480px]:p-[9px_7px]`}
-                        tabIndex="0"
-                        role="button"
-                        onClick={() => setSelectedTx(tx)}
-                        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSelectedTx(tx) } }}
-                      >
-                        <div className="transaction__visual">
-                          <span className={`icon-box ${tx.tone}`}><Icon name={tx.icon} alt="" /></span>
-                          <span className={`protocol-logo protocol-logo--${tx.tone}`} title={tx.protocol}>
-                            {tx.protocolMark}
-                          </span>
-                        </div>
-                        <div className="transaction__main grid min-w-0 gap-1">
-                          <strong>{tx.displayTitle}</strong>
-                          <div className="transaction__context">
-                            <span className="transaction__protocol">{tx.protocol}</span>
-                            <span aria-hidden="true">•</span>
-                            <span className="chain-badge">{tx.chain}</span>
-                          </div>
-                        </div>
-                        <div className="transaction__amount">
-                          <strong className={tx.positive ? 'positive' : ''}>{tx.amount}</strong>
-                          <span>{tx.crypto}</span>
-                        </div>
-                        <span className="transaction__time">{tx.meta}</span>
-                      </article>
-                    ))}
-                  </div>
-                ))}
+          <div className="card activity-feed rounded-3xl border-0 p-[22px] max-[1050px]:p-[18px] max-[480px]:rounded-[20px] max-[480px]:p-3.5">
+            <div className="activity-card__heading flex min-h-[35px] items-center justify-between gap-4">
+              <div className="grid gap-[3px]">
+                <span>{flow.periodLabel}</span>
+                <h2>Recent Activity</h2>
               </div>
             </div>
-
-            <aside className="card highlights-card rounded-3xl border-0 p-[22px] max-[1050px]:p-[18px] max-[480px]:rounded-[20px] max-[480px]:p-3.5">
-              <div className="activity-card__heading flex min-h-[35px] items-center justify-between gap-4">
-                <div className="grid gap-[3px]">
-                  <span>{flow.periodLabel}</span>
-                  <h2>Key Highlights</h2>
-                </div>
-              </div>
-              <div className="highlights-list mt-3 grid gap-[7px] max-[899px]:grid-cols-2 max-[480px]:grid-cols-1">
-                {highlights.map((highlight) => {
-                  const HighlightIcon = highlightIcons[highlight.icon]
-                  return (
+            <div className="transaction-list mt-3 grid grid-cols-1 gap-[3px]">
+              {groupedTransactions.map((group) => (
+                <div key={group.date}>
+                  <div className="px-1 pt-2 pb-1">
+                    <span className="text-[9px] font-bold text-slate-400 uppercase tracking-[0.15em]">{group.date}</span>
+                  </div>
+                  {group.items.map((tx) => (
                     <article
-                      key={highlight.label}
-                      className={`highlight-item highlight-item--${highlight.tone} grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-2.5 rounded-[15px] p-[11px]`}
+                      key={tx.title}
+                      className={`transaction transaction--${tx.tone} relative grid min-w-0 cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto_minmax(72px,auto)] items-center gap-[11px] rounded-[14px] border-0 bg-transparent p-[13px_11px] max-[1050px]:grid-cols-[auto_minmax(0,1fr)_auto] max-[700px]:grid-cols-[auto_minmax(0,1fr)] max-[480px]:gap-[9px] max-[480px]:p-[9px_7px]`}
+                      tabIndex="0"
+                      role="button"
+                      onClick={() => setSelectedTx(tx)}
+                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSelectedTx(tx) } }}
                     >
-                      <span className="highlight-item__icon"><HighlightIcon aria-hidden="true" /></span>
-                      <div className="grid min-w-0 gap-[3px]">
-                        <span>{highlight.label}</span>
-                        <strong>{highlight.value} <small>• {highlight.detail}</small></strong>
+                      <div className="transaction__visual">
+                        <span className={`icon-box ${tx.tone}`}><Icon name={tx.icon} alt="" /></span>
+                        <span className={`protocol-logo protocol-logo--${tx.tone}`} title={tx.protocol}>
+                          {tx.protocolMark}
+                        </span>
                       </div>
+                      <div className="transaction__main grid min-w-0 gap-1">
+                        <strong>{tx.displayTitle}</strong>
+                        <div className="transaction__context">
+                          <span className="transaction__protocol">{tx.protocol}</span>
+                          <span aria-hidden="true">•</span>
+                          <span className="chain-badge">{tx.chain}</span>
+                        </div>
+                      </div>
+                      <div className="transaction__amount">
+                        {tx.amount ? (
+                          <>
+                            <strong className={tx.positive ? 'positive' : ''}>{tx.amount}</strong>
+                            <span>{tx.crypto}</span>
+                          </>
+                        ) : (
+                          <span className="text-slate-400 text-[11px]">—</span>
+                        )}
+                      </div>
+                      <span className="transaction__time">{tx.meta}</span>
                     </article>
-                  )
-                })}
-              </div>
-            </aside>
+                  ))}
+                </div>
+              ))}
+            </div>
           </div>
         ) : (
           <div className="card activity-feed rounded-3xl border-0 p-[22px] max-[480px]:p-5 text-center">
