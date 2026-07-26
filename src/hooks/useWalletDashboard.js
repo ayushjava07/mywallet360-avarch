@@ -140,6 +140,46 @@ export function useWalletDashboard() {
     return () => connectedProvider.removeListener?.('accountsChanged', handleAccountsChanged)
   }, [analyzeWallet, connectedProvider])
 
+  useEffect(() => {
+    if (!wallet?.id || wallet.portfolioInventory?.status !== 'pending') return undefined
+
+    let cancelled = false
+    let attempts = 0
+    let timerId
+
+    const pollInventory = async () => {
+      attempts += 1
+
+      try {
+        const inventory = await walletService.getPortfolioInventory(wallet.id)
+        if (cancelled) return
+
+        setWallet((currentWallet) => {
+          if (!currentWallet || currentWallet.id !== wallet.id) return currentWallet
+          return {
+            ...currentWallet,
+            portfolioInventory: {
+              ...inventory,
+              analyzedAssetCount: currentWallet.assetCount,
+            },
+          }
+        })
+
+        if (inventory.status !== 'pending' || attempts >= 8) return
+      } catch {
+        if (attempts >= 8) return
+      }
+
+      timerId = window.setTimeout(pollInventory, 7_000)
+    }
+
+    timerId = window.setTimeout(pollInventory, 7_000)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timerId)
+    }
+  }, [wallet?.id, wallet?.portfolioInventory?.status])
+
   const connectWallet = async (walletProvider) => {
     setIsConnecting(true)
     setConnectionError('')

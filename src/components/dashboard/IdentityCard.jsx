@@ -10,7 +10,6 @@ export function IdentityCard({ stats }) {
           <span className="icon-box icon-box--3d"><ThreeDIcon icon={identificationCard3d} /></span>
           <h2>Financial Identity Profile</h2>
         </div>
-        <span className="pill pill--verified">BlobLens</span>
       </div>
       <div className="identity-grid relative z-[1] mt-4 grid grid-cols-4 gap-2.5 max-[900px]:grid-cols-2 max-[700px]:mt-3.5 max-[480px]:grid-cols-1 max-[480px]:gap-[9px]">
         {stats.map((stat) => (

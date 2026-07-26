@@ -3,6 +3,15 @@ import { calculatePersonalityDetails, isSwapTransaction } from "./personality.se
 import { calculateRiskScore } from "./scoring.service.js";
 import { resolveProtocol, resolveProtocolSync } from "./protocol-resolution.service.js";
 import {
+  buildAddressOverview,
+  buildTokenHoldingsSummary,
+  summarizeEtherscanTokenPortfolio,
+} from "./wallet-overview.service.js";
+import {
+  clearActivityStatsCache,
+  fetchWalletActivityStats,
+} from "./wallet-activity-stats.service.js";
+import {
   fromWei,
   normalizePercentages,
   percentage,
@@ -11,11 +20,14 @@ import {
 } from "../utils/calculations.js";
 
 const BLOCKACTION_URL = process.env.BLOCKACTION_API_URL;
+const DEFILLAMA_PRICES_URL = "https://coins.llama.fi/prices/current";
 const CHAIN_ID = process.env.BLOCKACTION_CHAIN_ID || "1";
 const PAGE_SIZE = 1000;
 const MAX_PAGES = 10;
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const REQUEST_INTERVAL_MS = 350;
+const INVENTORY_REQUEST_INTERVAL_MS = 550;
+const INVENTORY_PAGE_SIZE = 1000;
 const DEFAULT_ANALYSIS_PERIOD = "ytd";
 const USD_PEGGED_TOKEN_ADDRESSES = new Set([
   "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", // USDC
@@ -56,8 +68,13 @@ const PROTOCOL_ADDRESSES = {
 
 const responseCache = new Map();
 const walletCache = new Map();
+const priceCache = new Map();
+const portfolioInventoryCache = new Map();
+const PRICE_CACHE_TTL_MS = 60 * 1000;
 let requestQueue = Promise.resolve();
 let lastRequestAt = 0;
+let inventoryRequestQueue = Promise.resolve();
+let lastInventoryRequestAt = 0;
 
 function wait(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -75,6 +92,26 @@ function scheduleRequest(task) {
   return scheduled;
 }
 
+function scheduleInventoryRequest(task) {
+  const scheduled = inventoryRequestQueue.then(async () => {
+    const delay = Math.max(0, INVENTORY_REQUEST_INTERVAL_MS - (Date.now() - lastInventoryRequestAt));
+    if (delay) await wait(delay);
+    lastInventoryRequestAt = Date.now();
+    return task();
+  });
+
+  inventoryRequestQueue = scheduled.catch(() => undefined);
+  return scheduled;
+}
+
+export function clearWalletServiceCaches() {
+  responseCache.clear();
+  walletCache.clear();
+  priceCache.clear();
+  portfolioInventoryCache.clear();
+  clearActivityStatsCache();
+}
+
 function getCached(key) {
   const cached = responseCache.get(key);
 
@@ -89,6 +126,164 @@ function getCached(key) {
 function setCached(key, value) {
   responseCache.set(key, { value, expiresAt: Date.now() + CACHE_TTL_MS });
   return value;
+}
+
+function inventorySnapshot(entry) {
+  return {
+    status: entry.status,
+    tokenHoldingsCount: entry.tokenHoldingsCount,
+    tokenValueUsd: entry.tokenValueUsd ?? null,
+    pricedCount: entry.pricedCount ?? null,
+    source: entry.source,
+  };
+}
+
+function getPortfolioInventoryEntry(address) {
+  const entry = portfolioInventoryCache.get(address);
+
+  if (entry?.expiresAt && entry.expiresAt < Date.now()) {
+    portfolioInventoryCache.delete(address);
+    return null;
+  }
+
+  return entry || null;
+}
+
+async function aggregatePortfolioInventory(address, firstPage) {
+  let tokenHoldingsCount = firstPage.length;
+  let tokenValueUsd = 0;
+  let pricedCount = 0;
+  let previousPage = firstPage;
+
+  const firstSummary = summarizeEtherscanTokenPortfolio(firstPage);
+  if (firstSummary) {
+    tokenValueUsd += firstSummary.valueUsd;
+    pricedCount += firstSummary.pricedCount;
+  }
+
+  for (let page = 2; previousPage.length === INVENTORY_PAGE_SIZE; page += 1) {
+    const result = await scheduleInventoryRequest(() => blockActionRequest({
+      module: "account",
+      action: "addresstokenbalance",
+      address,
+      page,
+      offset: INVENTORY_PAGE_SIZE,
+    }));
+    tokenHoldingsCount += result.length;
+    const pageSummary = summarizeEtherscanTokenPortfolio(result);
+    if (pageSummary) {
+      tokenValueUsd += pageSummary.valueUsd;
+      pricedCount += pageSummary.pricedCount;
+    }
+    previousPage = result;
+
+    if (result.length < INVENTORY_PAGE_SIZE) {
+      return { tokenHoldingsCount, tokenValueUsd, pricedCount };
+    }
+  }
+
+  return { tokenHoldingsCount, tokenValueUsd, pricedCount };
+}
+
+function startPortfolioInventoryJob(address, firstPage) {
+  const existing = getPortfolioInventoryEntry(address);
+  if (existing) return inventorySnapshot(existing);
+
+  if (!Array.isArray(firstPage)) {
+    const unavailable = {
+      status: "unavailable",
+      tokenHoldingsCount: null,
+      source: null,
+      expiresAt: Date.now() + CACHE_TTL_MS,
+    };
+    portfolioInventoryCache.set(address, unavailable);
+    return inventorySnapshot(unavailable);
+  }
+
+  if (firstPage.length < INVENTORY_PAGE_SIZE) {
+    const firstSummary = summarizeEtherscanTokenPortfolio(firstPage);
+    const complete = {
+      status: "complete",
+      tokenHoldingsCount: firstPage.length,
+      tokenValueUsd: firstSummary ? round(firstSummary.valueUsd, 2) : null,
+      pricedCount: firstSummary?.pricedCount ?? null,
+      source: "etherscan",
+      expiresAt: Date.now() + CACHE_TTL_MS,
+    };
+    portfolioInventoryCache.set(address, complete);
+    return inventorySnapshot(complete);
+  }
+
+  const firstSummary = summarizeEtherscanTokenPortfolio(firstPage);
+  const pending = {
+    status: "pending",
+    tokenHoldingsCount: firstPage.length,
+    tokenValueUsd: firstSummary ? round(firstSummary.valueUsd, 2) : null,
+    pricedCount: firstSummary?.pricedCount ?? null,
+    source: "etherscan",
+    expiresAt: null,
+  };
+  portfolioInventoryCache.set(address, pending);
+
+  aggregatePortfolioInventory(address, firstPage)
+    .then(({ tokenHoldingsCount, tokenValueUsd, pricedCount }) => {
+      portfolioInventoryCache.set(address, {
+        status: "complete",
+        tokenHoldingsCount,
+        tokenValueUsd: round(tokenValueUsd, 2),
+        pricedCount,
+        source: "etherscan",
+        expiresAt: Date.now() + CACHE_TTL_MS,
+      });
+    })
+    .catch((error) => {
+      console.warn(`[Portfolio Inventory] Unable to count ${address}: ${error.message}`);
+      portfolioInventoryCache.set(address, {
+        status: "unavailable",
+        tokenHoldingsCount: null,
+        source: null,
+        expiresAt: Date.now() + CACHE_TTL_MS,
+      });
+    });
+
+  return inventorySnapshot(pending);
+}
+
+export function getPortfolioInventory(address) {
+  const normalizedAddress = address.toLowerCase();
+  const existing = getPortfolioInventoryEntry(normalizedAddress);
+  if (existing) return inventorySnapshot(existing);
+
+  const pending = {
+    status: "pending",
+    tokenHoldingsCount: null,
+    source: null,
+    expiresAt: null,
+  };
+  portfolioInventoryCache.set(normalizedAddress, pending);
+
+  blockActionRequest({
+    module: "account",
+    action: "addresstokenbalance",
+    address: normalizedAddress,
+    page: 1,
+    offset: INVENTORY_PAGE_SIZE,
+  })
+    .then((firstPage) => {
+      portfolioInventoryCache.delete(normalizedAddress);
+      startPortfolioInventoryJob(normalizedAddress, firstPage);
+    })
+    .catch((error) => {
+      console.warn(`[Portfolio Inventory] Unable to start ${normalizedAddress}: ${error.message}`);
+      portfolioInventoryCache.set(normalizedAddress, {
+        status: "unavailable",
+        tokenHoldingsCount: null,
+        source: null,
+        expiresAt: Date.now() + CACHE_TTL_MS,
+      });
+    });
+
+  return inventorySnapshot(pending);
 }
 
 export async function blockActionRequest(params) {
@@ -281,7 +476,71 @@ function calculateMoneyFlow(transactions, internalTransactions, address, ethPric
   };
 }
 
-function buildAssets(tokenTransfers, ethBalance, ethPrice, address) {
+export async function fetchTokenPrices(contractAddresses) {
+  if (!contractAddresses || contractAddresses.length === 0) return {};
+
+  const prices = {};
+  const uncached = [];
+  const now = Date.now();
+
+  // Check cache first
+  contractAddresses.forEach((address) => {
+    const cached = priceCache.get(address);
+    if (cached && cached.expiresAt > now) {
+      prices[address] = cached.value;
+    } else {
+      uncached.push(address);
+    }
+  });
+
+  if (uncached.length === 0) return prices;
+
+  const batchSize = 50;
+  for (let i = 0; i < uncached.length; i += batchSize) {
+    const batch = uncached.slice(i, i + batchSize);
+    // DefiLlama format: ethereum:0xaddr1,ethereum:0xaddr2,...
+    const coinIds = batch.map((addr) => `ethereum:${addr}`).join(",");
+
+    try {
+      const response = await axios.get(`${DEFILLAMA_PRICES_URL}/${coinIds}`, {
+        params: { searchWidth: "4h" },
+        timeout: 10_000,
+      });
+
+      if (response.data?.coins) {
+        Object.entries(response.data.coins).forEach(([key, data]) => {
+          if (data.price > 0) {
+            // Key format: "ethereum:0xaddr" -> extract address
+            const address = key.split(":").pop().toLowerCase();
+            prices[address] = data.price;
+            priceCache.set(address, { value: data.price, expiresAt: now + PRICE_CACHE_TTL_MS });
+          }
+        });
+      }
+    } catch (error) {
+      console.warn(`[Token Pricing] Failed to fetch prices for batch ${Math.floor(i / batchSize) + 1}: ${error.message}`);
+    }
+  }
+
+  return prices;
+}
+
+function buildEtherscanPriceMap(etherscanTokenPortfolio) {
+  if (!Array.isArray(etherscanTokenPortfolio)) return {};
+
+  const prices = {};
+  etherscanTokenPortfolio.forEach((token) => {
+    const contractAddress = (token.contractAddress || token.TokenAddress || token.tokenAddress || "")
+      .toLowerCase();
+    const price = Number(token.TokenPriceUSD || token.tokenPriceUSD || 0);
+    if (contractAddress && price > 0) {
+      prices[contractAddress] = price;
+    }
+  });
+  return prices;
+}
+
+function buildAssets(tokenTransfers, ethBalance, ethPrice, address, tokenPrices = {}, etherscanPrices = {}) {
   const tokenMap = new Map();
 
   tokenTransfers.forEach((transfer) => {
@@ -304,11 +563,30 @@ function buildAssets(tokenTransfers, ethBalance, ethPrice, address) {
       const balance = tokenAmount(asset.rawBalance.toString(), asset.decimals);
       const isUsdPegged = USD_PEGGED_TOKEN_ADDRESSES.has(asset.contractAddress);
       const isEthEquivalent = ETH_EQUIVALENT_TOKEN_ADDRESSES.has(asset.contractAddress);
-      const usdValue = isUsdPegged
-        ? balance
-        : isEthEquivalent
-          ? balance * ethPrice
-          : 0;
+      const priceFromApi = tokenPrices[asset.contractAddress];
+
+      let usdValue;
+      let priceAvailable;
+
+      if (isUsdPegged) {
+        usdValue = balance;
+        priceAvailable = true;
+      } else if (isEthEquivalent) {
+        usdValue = balance * ethPrice;
+        priceAvailable = true;
+      } else if (priceFromApi !== undefined && priceFromApi > 0) {
+        usdValue = balance * Number(priceFromApi);
+        priceAvailable = true;
+      } else {
+        const priceFromEtherscan = etherscanPrices[asset.contractAddress];
+        if (priceFromEtherscan !== undefined && priceFromEtherscan > 0) {
+          usdValue = balance * Number(priceFromEtherscan);
+          priceAvailable = true;
+        } else {
+          usdValue = 0;
+          priceAvailable = false;
+        }
+      }
 
       return {
         contractAddress: asset.contractAddress,
@@ -317,7 +595,7 @@ function buildAssets(tokenTransfers, ethBalance, ethPrice, address) {
         rawBalance: balance,
         balance: round(balance, 8),
         usdValue: round(usdValue, 2),
-        priceAvailable: isUsdPegged || isEthEquivalent,
+        priceAvailable,
       };
     });
 
@@ -455,7 +733,40 @@ export async function analyzeProtocols(transactions) {
   };
 }
 
-function buildTimeline(transactions, address) {
+function buildTokenTransfersByHash(tokenTransfers) {
+  const byHash = new Map();
+  tokenTransfers.forEach((transfer) => {
+    const hash = transfer.hash?.toLowerCase();
+    if (!hash) return;
+    const list = byHash.get(hash) || [];
+    list.push(transfer);
+    byHash.set(hash, list);
+  });
+  return byHash;
+}
+
+function pickTokenValueForTimeline(tokenTransfers, address) {
+  if (!tokenTransfers?.length) return null;
+
+  const candidates = tokenTransfers
+    .map((transfer) => {
+      const amount = tokenAmount(transfer.value || "0", Number(transfer.tokenDecimal || 0));
+      if (!(amount > 0)) return null;
+      return {
+        amount: round(amount, 6),
+        symbol: transfer.tokenSymbol || "TOKEN",
+        direction: transfer.to?.toLowerCase() === address ? "receive" : "send",
+      };
+    })
+    .filter(Boolean)
+    .sort((first, second) => second.amount - first.amount);
+
+  return candidates[0] || null;
+}
+
+export function buildTimeline(transactions, address, tokenTransfers = []) {
+  const tokensByHash = buildTokenTransfersByHash(tokenTransfers);
+
   return transactions.slice(0, 20).map((transaction) => {
     const direction = transaction.to?.toLowerCase() === address ? "receive" : "send";
     const type = isSwapTransaction(transaction)
@@ -464,32 +775,292 @@ function buildTimeline(transactions, address) {
         ? "contract interaction"
         : direction;
 
+    const ethAmount = fromWei(transaction.value);
+    let value = null;
+
+    if (ethAmount > 0) {
+      value = {
+        amount: round(ethAmount),
+        symbol: "ETH",
+      };
+    } else {
+      const tokenValue = pickTokenValueForTimeline(
+        tokensByHash.get(transaction.hash?.toLowerCase()) || [],
+        address,
+      );
+      if (tokenValue) {
+        value = {
+          amount: tokenValue.amount,
+          symbol: tokenValue.symbol,
+          direction: tokenValue.direction,
+        };
+      }
+    }
+
     return {
       hash: transaction.hash,
       timestamp: new Date(Number(transaction.timeStamp) * 1000).toISOString(),
       type,
-      value: {
-        amount: round(fromWei(transaction.value)),
-        symbol: "ETH",
-      },
+      value,
       from: transaction.from,
       to: transaction.to,
     };
   });
 }
 
-function buildLargestHolding(assets) {
-  const largest = assets[0];
-  const totalValue = assets.reduce((sum, asset) => sum + asset.usdValue, 0);
+export function buildLargestHolding(assets) {
+  const held = (assets || []).filter((asset) => Number(asset.rawBalance ?? asset.balance ?? 0) > 0);
+  if (!held.length) return null;
 
-  return largest
-    ? {
-        symbol: largest.symbol,
-        balance: String(largest.balance),
-        usdValue: largest.usdValue,
-        percentage: percentage(largest.usdValue, totalValue),
+  const priced = held.filter((asset) => asset.priceAvailable && Number(asset.usdValue) > 0);
+  const unpricedCount = held.filter((asset) => !asset.priceAvailable).length;
+  const largest = (priced.length
+    ? [...priced].sort((first, second) => second.usdValue - first.usdValue)
+    : held)[0];
+  const totalPricedValue = priced.reduce((sum, asset) => sum + Number(asset.usdValue || 0), 0);
+
+  // When unpriced holdings exist, dilute the priced-only share by coverage so we never
+  // present "100%" as if the rest of the book did not exist.
+  const pricedShare = percentage(largest.usdValue, totalPricedValue);
+  const coverageRatio = held.length > 0 ? priced.length / held.length : 0;
+  const displayPercentage = unpricedCount > 0
+    ? round(pricedShare * coverageRatio, 2)
+    : pricedShare;
+
+  return {
+    symbol: largest.symbol,
+    balance: String(largest.balance),
+    usdValue: largest.usdValue,
+    percentage: displayPercentage,
+    percentageBasis: unpricedCount > 0 ? "all_holdings" : "priced",
+    unpricedCount,
+    totalAssetCount: held.length,
+    pricedAssetCount: priced.length,
+    priceAvailable: Boolean(largest.priceAvailable),
+  };
+}
+
+function attachAssetPercentages(assets) {
+  const held = assets || [];
+  const totalPricedValue = held
+    .filter((asset) => asset.priceAvailable)
+    .reduce((sum, asset) => sum + Number(asset.usdValue || 0), 0);
+
+  return held.map((asset) => ({
+    ...asset,
+    percentage: asset.priceAvailable && totalPricedValue > 0
+      ? percentage(asset.usdValue, totalPricedValue)
+      : 0,
+    percentageBasis: "priced",
+  }));
+}
+
+export function buildDailyTransactionCounts(transactions) {
+  const counts = {};
+  (transactions || []).forEach((transaction) => {
+    const timestamp = Number(transaction.timeStamp || 0);
+    if (!timestamp) return;
+    const date = new Date(timestamp * 1000).toISOString().slice(0, 10);
+    counts[date] = (counts[date] || 0) + 1;
+  });
+  return counts;
+}
+
+function emptyDailyBucket() {
+  return {
+    transactionCount: 0,
+    uniqueOutgoingAddresses: new Set(),
+    uniqueIncomingAddresses: new Set(),
+    ethFees: 0,
+    ethSent: 0,
+    ethReceived: 0,
+    tokenTransfers: 0,
+  };
+}
+
+function feePaidEth(transaction) {
+  const gasUsed = Number(transaction.gasUsed || 0);
+  const gasPrice = Number(transaction.gasPrice || 0);
+  if (!gasUsed || !gasPrice) return 0;
+  return fromWei(gasUsed * gasPrice);
+}
+
+/**
+ * Per-day analytics for the Transaction Analytics chart.
+ * Derives from already-fetched txs — no extra API calls.
+ */
+export function buildDailyAnalytics(address, {
+  normalTransactions = [],
+  tokenTransfers = [],
+  nftTransfers = [],
+} = {}) {
+  const wallet = (address || "").toLowerCase();
+  const byDate = new Map();
+
+  const ensure = (date) => {
+    if (!byDate.has(date)) byDate.set(date, emptyDailyBucket());
+    return byDate.get(date);
+  };
+
+  (normalTransactions || []).forEach((transaction) => {
+    const timestamp = Number(transaction.timeStamp || 0);
+    if (!timestamp) return;
+    const date = new Date(timestamp * 1000).toISOString().slice(0, 10);
+    const bucket = ensure(date);
+    bucket.transactionCount += 1;
+
+    const from = (transaction.from || "").toLowerCase();
+    const to = (transaction.to || "").toLowerCase();
+    const failed = transaction.isError === "1";
+
+    if (from === wallet && to) {
+      bucket.uniqueOutgoingAddresses.add(to);
+      if (!failed) {
+        bucket.ethFees += feePaidEth(transaction);
+        const amount = fromWei(transaction.value);
+        if (amount > 0) bucket.ethSent += amount;
       }
-    : null;
+    }
+
+    if (to === wallet && from) {
+      bucket.uniqueIncomingAddresses.add(from);
+      if (!failed) {
+        const amount = fromWei(transaction.value);
+        if (amount > 0) bucket.ethReceived += amount;
+      }
+    }
+  });
+
+  [...(tokenTransfers || []), ...(nftTransfers || [])].forEach((transfer) => {
+    const timestamp = Number(transfer.timeStamp || 0);
+    if (!timestamp) return;
+    const date = new Date(timestamp * 1000).toISOString().slice(0, 10);
+    ensure(date).tokenTransfers += 1;
+  });
+
+  return [...byDate.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([date, bucket]) => {
+      const ethSent = round(bucket.ethSent, 6);
+      const ethReceived = round(bucket.ethReceived, 6);
+      return {
+        date,
+        transactionCount: bucket.transactionCount,
+        uniqueOutgoing: bucket.uniqueOutgoingAddresses.size,
+        uniqueIncoming: bucket.uniqueIncomingAddresses.size,
+        ethFees: round(bucket.ethFees, 8),
+        ethSent,
+        ethReceived,
+        etherVolume: round(ethSent + ethReceived, 6),
+        tokenTransfers: bucket.tokenTransfers,
+      };
+    });
+}
+
+/** Prefer the longer series for tx metrics; overlay tokenTransfers from either side. */
+export function mergeDailyAnalytics(primary = [], secondary = []) {
+  const map = new Map();
+
+  primary.forEach((row) => {
+    map.set(row.date, { ...row });
+  });
+
+  secondary.forEach((row) => {
+    const existing = map.get(row.date);
+    if (!existing) {
+      map.set(row.date, { ...row });
+      return;
+    }
+
+    const useSecondaryTx = (row.transactionCount || 0) > (existing.transactionCount || 0);
+    map.set(row.date, {
+      date: row.date,
+      transactionCount: useSecondaryTx ? row.transactionCount : existing.transactionCount,
+      uniqueOutgoing: useSecondaryTx ? row.uniqueOutgoing : existing.uniqueOutgoing,
+      uniqueIncoming: useSecondaryTx ? row.uniqueIncoming : existing.uniqueIncoming,
+      ethFees: useSecondaryTx ? row.ethFees : existing.ethFees,
+      ethSent: useSecondaryTx ? row.ethSent : existing.ethSent,
+      ethReceived: useSecondaryTx ? row.ethReceived : existing.ethReceived,
+      etherVolume: useSecondaryTx ? row.etherVolume : existing.etherVolume,
+      tokenTransfers: Math.max(existing.tokenTransfers || 0, row.tokenTransfers || 0),
+    });
+  });
+
+  return [...map.values()].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+}
+
+export function buildLastActivityAt(...transactionLists) {
+  let maxTimestamp = 0;
+  transactionLists.forEach((list) => {
+    (list || []).forEach((transaction) => {
+      const timestamp = Number(transaction.timeStamp || 0);
+      if (timestamp > maxTimestamp) maxTimestamp = timestamp;
+    });
+  });
+  return maxTimestamp ? new Date(maxTimestamp * 1000).toISOString() : null;
+}
+
+function buildMoneyFlowStats(normalTransactions, address) {
+  const amounts = [];
+  const monthCounts = {};
+  const weekCounts = {};
+
+  (normalTransactions || []).forEach((transaction) => {
+    if (transaction.isError === "1") return;
+    const amount = fromWei(transaction.value);
+    if (amount > 0) amounts.push(amount);
+
+    const timestamp = Number(transaction.timeStamp || 0);
+    if (!timestamp) return;
+    const date = new Date(timestamp * 1000);
+    const monthKey = `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+    monthCounts[monthKey] = (monthCounts[monthKey] || 0) + 1;
+
+    const weekStart = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+    weekStart.setUTCDate(weekStart.getUTCDate() - weekStart.getUTCDay());
+    const weekKey = weekStart.toISOString().slice(0, 10);
+    weekCounts[weekKey] = (weekCounts[weekKey] || 0) + 1;
+  });
+
+  const mostActiveMonth = Object.entries(monthCounts).sort((a, b) => b[1] - a[1])[0] || null;
+  const mostActiveWeek = Object.entries(weekCounts).sort((a, b) => b[1] - a[1])[0] || null;
+  const avgTransfer = amounts.length
+    ? round(amounts.reduce((sum, value) => sum + value, 0) / amounts.length, 6)
+    : 0;
+  const largestTransfer = amounts.length ? round(Math.max(...amounts), 6) : 0;
+
+  let incomingCount = 0;
+  let outgoingCount = 0;
+  (normalTransactions || []).forEach((transaction) => {
+    if (transaction.isError === "1") return;
+    if (transaction.to?.toLowerCase() === address) incomingCount += 1;
+    if (transaction.from?.toLowerCase() === address) outgoingCount += 1;
+  });
+
+  return {
+    avgTransfer,
+    largestTransfer,
+    incomingCount,
+    outgoingCount,
+    mostActiveMonth: mostActiveMonth?.[0] || null,
+    mostActiveMonthCount: mostActiveMonth?.[1] || 0,
+    mostActiveWeek: mostActiveWeek?.[0] || null,
+    mostActiveWeekCount: mostActiveWeek?.[1] || 0,
+  };
+}
+
+function estimateEthPriceChangePercent(moneyFlow, ethPrice) {
+  const ethNet = Number(moneyFlow?.received || 0) - Number(moneyFlow?.spent || 0);
+  const usdNet = Number(moneyFlow?.receivedUsd || 0) - Number(moneyFlow?.spentUsd || 0);
+  if (!ethNet || !ethPrice || !Number.isFinite(usdNet)) return null;
+
+  const ethSign = Math.sign(ethNet);
+  const usdSign = Math.sign(usdNet);
+  if (!ethSign || !usdSign || ethSign === usdSign) return null;
+
+  const impliedPrice = usdNet / ethNet;
+  if (!(impliedPrice > 0)) return null;
+  return round(((ethPrice - impliedPrice) / impliedPrice) * 100, 2);
 }
 
 function exactTokenAmount(value, decimals) {
@@ -532,11 +1103,12 @@ function tokenValueDelta(transfer, address, ethPrice) {
   if (transfer.isError === "1") return 0;
 
   const contractAddress = transfer.contractAddress?.toLowerCase();
+  const cachedPrice = contractAddress ? priceCache.get(contractAddress) : null;
   const price = USD_PEGGED_TOKEN_ADDRESSES.has(contractAddress)
     ? 1
     : ETH_EQUIVALENT_TOKEN_ADDRESSES.has(contractAddress)
       ? ethPrice
-      : 0;
+      : cachedPrice?.value || 0;
   if (!price) return 0;
 
   const value = tokenAmount(transfer.value || "0", Number(transfer.tokenDecimal || 0)) * price;
@@ -634,16 +1206,35 @@ export function buildPublicWalletData(analytics) {
     balance: asset.balance,
     usdValue: asset.usdValue,
     priceAvailable: asset.priceAvailable,
-  }))
+    percentage: asset.percentage ?? 0,
+    percentageBasis: asset.percentageBasis || "priced",
+  }));
   const pricedCount = allAssets.filter((a) => a.priceAvailable).length;
+  const totalAssetCount = allAssets.length;
+  const pricingCoveragePercent = totalAssetCount > 0
+    ? round((pricedCount / totalAssetCount) * 100, 1)
+    : 0;
+
   return {
+    portfolioValue: analytics.portfolioValue,
+    portfolioValueSource: analytics.portfolioValueSource,
+    portfolioInventory: {
+      ...analytics.portfolioInventory,
+      analyzedAssetCount: analytics.assetCount,
+    },
     netWorth: analytics.netWorth,
     ethPrice: analytics.ethPrice,
+    ethPriceChangePercent: analytics.ethPriceChangePercent ?? null,
     assetCount: analytics.assetCount,
     pricedAssetCount: pricedCount,
+    pricingCoveragePercent,
     nftCount: analytics.nftCount,
     transactionCount: analytics.transactionCount,
     transactionCountIsLowerBound: analytics.transactionCountIsLowerBound,
+    lastActivityAt: analytics.lastActivityAt ?? null,
+    dailyTransactionCounts: analytics.dailyTransactionCounts || {},
+    dailyAnalytics: analytics.dailyAnalytics || [],
+    moneyFlowStats: analytics.moneyFlowStats || null,
     largestHolding: analytics.largestHolding,
     assets: allAssets,
     moneyFlow: analytics.moneyFlow,
@@ -651,7 +1242,12 @@ export function buildPublicWalletData(analytics) {
     personalityFactors: analytics.personalityFactors,
     timeline: analytics.timeline,
     valuationHistory: analytics.valuationHistory,
-    valuation: analytics.valuation,
+    valuation: {
+      ...analytics.valuation,
+      pricedAssetCount: pricedCount,
+      totalAssetCount,
+      pricingCoveragePercent,
+    },
     mostUsedProtocol: {
       name: analytics.mostUsedProtocol.name,
       interactionCount: analytics.mostUsedProtocol.interactionCount,
@@ -663,6 +1259,8 @@ export function buildPublicWalletData(analytics) {
     period: analytics.period,
     analysisWindow: analytics.analysisWindow,
     generatedAt: new Date().toISOString(),
+    addressOverview: analytics.addressOverview ?? null,
+    activityStats: analytics.activityStats ?? null,
   };
 }
 
@@ -702,6 +1300,7 @@ export async function getWalletData(walletAddress, analysisPeriod = DEFAULT_ANAL
       nftResult,
       balanceWei,
       priceResult,
+      etherscanTokenPortfolio,
     ] = await Promise.all([
       fetchPaginated("txlist", address, { startblock: period.startBlock, endblock: period.endBlock }),
       fetchPaginated("txlistinternal", address, { startblock: period.startBlock, endblock: period.endBlock }),
@@ -709,6 +1308,9 @@ export async function getWalletData(walletAddress, analysisPeriod = DEFAULT_ANAL
       fetchPaginated("tokennfttx", address, { startblock: period.startBlock, endblock: period.endBlock }),
       blockActionRequest({ module: "account", action: "balance", address, tag: "latest" }),
       blockActionRequest({ module: "stats", action: "ethprice" }),
+      // This Pro endpoint is optional. Its absence must not prevent analytics from loading.
+      blockActionRequest({ module: "account", action: "addresstokenbalance", address, page: 1, offset: 1000 })
+        .catch(() => null),
     ]);
 
     const ethPrice = Number(priceResult.ethusd || 0);
@@ -717,17 +1319,53 @@ export async function getWalletData(walletAddress, analysisPeriod = DEFAULT_ANAL
     const internalTransactions = internalResult.records;
     const tokenTransfers = addDirection(tokenResult.records, address);
     const nftTransfers = addDirection(nftResult.records, address);
-    const assets = buildAssets(tokenTransfers, ethBalance, ethPrice, address);
-    const pricedAssets = assets.filter((asset) => asset.priceAvailable);
     const nfts = buildNfts(nftTransfers, address);
-    const protocolAnalysis = await analyzeProtocols(normalTransactions);
+
+    const etherscanPrices = buildEtherscanPriceMap(etherscanTokenPortfolio);
+
+    // Build initial assets without external prices to know which tokens need pricing
+    const initialAssets = buildAssets(tokenTransfers, ethBalance, ethPrice, address, {}, etherscanPrices);
+    const tokensNeedingPrices = initialAssets
+      .filter((a) => !a.priceAvailable && a.contractAddress && Number(a.rawBalance) > 0)
+      .map((a) => a.contractAddress);
+    const tokenPricePromise = tokensNeedingPrices.length > 0
+      ? fetchTokenPrices(tokensNeedingPrices)
+      : Promise.resolve({});
+
+    const [tokenPrices, protocolAnalysis] = await Promise.all([
+      tokenPricePromise,
+      analyzeProtocols(normalTransactions),
+    ]);
+
+    // Rebuild assets with DefiLlama + Etherscan prices for every unpriced held token
+    const fullyPricedAssets = attachAssetPercentages(
+      buildAssets(tokenTransfers, ethBalance, ethPrice, address, tokenPrices, etherscanPrices),
+    );
+    const pricedAssets = fullyPricedAssets.filter((asset) => asset.priceAvailable);
+
+    if (tokensNeedingPrices.length > 0) {
+      const newlyPriced = pricedAssets.filter(
+        (a) => a.contractAddress && tokensNeedingPrices.includes(a.contractAddress)
+      );
+      console.log(`[Token Pricing] DefiLlama priced ${newlyPriced.length}/${tokensNeedingPrices.length} tokens`);
+    }
+
     const moneyFlow = calculateMoneyFlow(normalTransactions, internalTransactions, address, ethPrice);
+    const moneyFlowStats = buildMoneyFlowStats(normalTransactions, address);
+    const ethPriceChangePercent = estimateEthPriceChangePercent(moneyFlow, ethPrice);
+    const dailyTransactionCounts = buildDailyTransactionCounts(normalTransactions);
+    let dailyAnalytics = buildDailyAnalytics(address, {
+      normalTransactions,
+      tokenTransfers,
+      nftTransfers,
+    });
+    const lastActivityAt = buildLastActivityAt(normalTransactions, internalTransactions, tokenTransfers, nftTransfers);
     const personalityDetails = calculatePersonalityDetails({
       normalTransactions,
       tokenTransfers,
       nftTransfers,
       protocolCounts: protocolAnalysis.counts,
-      currentAssetCount: assets.length,
+      currentAssetCount: fullyPricedAssets.length,
     });
     const walletPersonality = personalityDetails.percentages;
     const personality = normalizePercentages({
@@ -737,11 +1375,21 @@ export async function getWalletData(walletAddress, analysisPeriod = DEFAULT_ANAL
       holder: walletPersonality.holder,
     });
     const riskScore = calculateRiskScore({
-      assets,
+      assets: fullyPricedAssets,
       normalTransactions,
       protocolCounts: protocolAnalysis.counts,
     });
     const netWorth = round(pricedAssets.reduce((sum, asset) => sum + asset.usdValue, 0), 2);
+    const nativeValue = ethBalance * ethPrice;
+    const etherscanTokenSummary = summarizeEtherscanTokenPortfolio(etherscanTokenPortfolio);
+    const etherscanTokenValue = etherscanTokenSummary
+      ? round(etherscanTokenSummary.valueUsd, 2)
+      : null;
+    const hasEtherscanPortfolio = etherscanTokenValue !== null;
+    // Prefer transfer-scan + DefiLlama net worth; Etherscan Pro is inventory/count only unless
+    // it is the sole available valuation (kept as portfolioValue for transparency).
+    const portfolioValue = round(hasEtherscanPortfolio ? nativeValue + etherscanTokenValue : netWorth, 2);
+    const portfolioInventory = startPortfolioInventoryJob(address, etherscanTokenPortfolio);
     const valuationHistory = buildValuationHistory({
       address,
       currentValue: netWorth,
@@ -753,17 +1401,25 @@ export async function getWalletData(walletAddress, analysisPeriod = DEFAULT_ANAL
     });
     const analytics = {
       netWorth,
+      portfolioValue,
+      portfolioValueSource: hasEtherscanPortfolio ? "etherscan" : "defillama",
+      portfolioInventory,
       ethPrice,
-      assetCount: assets.length,
+      ethPriceChangePercent,
+      assetCount: fullyPricedAssets.length,
       nftCount: nfts.reduce((sum, nft) => sum + nft.amount, 0),
       transactionCount: normalTransactions.length,
       transactionCountIsLowerBound: !normalResult.complete,
-      largestHolding: buildLargestHolding(pricedAssets),
-      assets,
+      lastActivityAt,
+      dailyTransactionCounts,
+      dailyAnalytics,
+      moneyFlowStats,
+      largestHolding: buildLargestHolding(fullyPricedAssets),
+      assets: fullyPricedAssets,
       moneyFlow,
       personality,
       personalityFactors: personalityDetails.factors,
-      timeline: buildTimeline(normalTransactions, address),
+      timeline: buildTimeline(normalTransactions, address, tokenTransfers),
       valuationHistory,
       valuation: {
         source: "blockaction",
@@ -772,7 +1428,10 @@ export async function getWalletData(walletAddress, analysisPeriod = DEFAULT_ANAL
           tokenTransfers.length > 0 ||
           nftTransfers.length > 0) ? ["eth-mainnet"] : [],
         pricedAssetCount: pricedAssets.length,
-        totalAssetCount: assets.length,
+        totalAssetCount: fullyPricedAssets.length,
+        pricingCoveragePercent: fullyPricedAssets.length > 0
+          ? round((pricedAssets.length / fullyPricedAssets.length) * 100, 1)
+          : 0,
         complete: tokenResult.complete,
       },
       mostUsedProtocol: {
@@ -800,6 +1459,63 @@ export async function getWalletData(walletAddress, analysisPeriod = DEFAULT_ANAL
         nftTransfersComplete: nftResult.complete,
       },
     };
+
+    const activityStatsPromise = fetchWalletActivityStats(address).catch((activityError) => {
+      console.warn(`[Activity Stats] Partial stats for ${address}: ${activityError.message}`);
+      return null;
+    });
+
+    try {
+      analytics.addressOverview = await buildAddressOverview({
+        address,
+        ethBalance,
+        ethPrice,
+        assets: fullyPricedAssets,
+        portfolioInventory,
+        etherscanTokenSummary,
+      });
+    } catch (overviewError) {
+      console.warn(`[Wallet Overview] Partial overview for ${address}: ${overviewError.message}`);
+      analytics.addressOverview = {
+        ethBalance,
+        ethValueUsd: round(ethBalance * ethPrice, 2),
+        tokenHoldings: (() => {
+          const summary = buildTokenHoldingsSummary(
+            fullyPricedAssets,
+            ethPrice,
+            portfolioInventory,
+            etherscanTokenSummary,
+          );
+          return {
+            valueUsd: summary.tokenValueUsd,
+            pricedCount: summary.pricedTokenCount,
+            totalCount: summary.totalTokenCount,
+            unpricedCount: summary.unpricedCount,
+            totalAssetsHeld: summary.totalAssetsHeld,
+            inventorySource: summary.inventorySource,
+            inventoryComplete: summary.inventoryComplete,
+            inventoryPending: summary.inventoryPending,
+            valuationSource: summary.valuationSource,
+          };
+        })(),
+        firstTransactionAt: null,
+        latestTransactionAt: null,
+        fundedBy: null,
+        delegation: null,
+      };
+    }
+
+    analytics.activityStats = await activityStatsPromise;
+
+    if (analytics.activityStats?.dailyAnalytics?.length) {
+      analytics.dailyAnalytics = mergeDailyAnalytics(
+        analytics.dailyAnalytics,
+        analytics.activityStats.dailyAnalytics,
+      );
+      analytics.dailyTransactionCounts = Object.fromEntries(
+        analytics.dailyAnalytics.map((row) => [row.date, row.transactionCount]),
+      );
+    }
 
     const result = buildPublicWalletData(analytics);
 

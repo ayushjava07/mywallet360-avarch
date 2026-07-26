@@ -31,6 +31,33 @@ export function normalizePercentages(scores) {
   return Object.fromEntries(normalized);
 }
 
+/**
+ * Safely extract the USD value from any asset object, supporting multiple
+ * common field name conventions without breaking existing code.
+ *
+ * Supported field names (checked in order):
+ *   value_usd, usdValue, usd_value, usd, value (if numeric and > 0)
+ * Falls back to priceUsd * balance if both are available.
+ *
+ * @param {object} asset - An asset object with optional price/value fields.
+ * @returns {number} The USD value, or 0 if it cannot be determined.
+ */
+export function getUsdValue(asset) {
+  if (!asset || typeof asset !== 'object') return 0;
+
+  if (typeof asset.value_usd === 'number' && asset.value_usd > 0) return asset.value_usd;
+  if (typeof asset.usdValue === 'number' && asset.usdValue > 0) return asset.usdValue;
+  if (typeof asset.usd_value === 'number' && asset.usd_value > 0) return asset.usd_value;
+  if (typeof asset.usd === 'number' && asset.usd > 0) return asset.usd;
+  if (typeof asset.value === 'number' && asset.value > 0) return asset.value;
+  
+  const price = Number(asset.priceUsd ?? asset.price ?? 0);
+  const balance = Number(asset.balance ?? asset.rawBalance ?? 0);
+  if (price > 0 && balance > 0) return price * balance;
+
+  return 0;
+}
+
 export function getWalletAge(oldestTimestamp) {
   if (!oldestTimestamp) {
     return { days: 0, years: 0, firstTransactionAt: null };
