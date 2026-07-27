@@ -428,41 +428,41 @@ export function MoneyFlowTab({ wallet }) {
       </section>
 
       {(nftBreakdown?.incoming > 0 || nftBreakdown?.outgoing > 0) && (
-        <section className="apple-card p-[22px] max-[480px]:p-5">
-          <div className="flex items-center justify-between mb-4">
-            <div>
+        <section className="apple-card nft-activity-card p-[22px] max-[480px]:p-4">
+          <div className="flex items-center justify-between mb-4 max-[480px]:mb-3">
+            <div className="min-w-0">
               <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-[0.2em] mb-1">NFT Activity</p>
               <p className="text-xs text-slate-400 dark:text-slate-500">{nftBreakdown.total} total transfers</p>
             </div>
-            <MaterialIcon icon="stadia_controller" className="text-teal-400 text-2xl" />
+            <MaterialIcon icon="stadia_controller" className="text-teal-400 text-2xl shrink-0" />
           </div>
-          <div className="grid grid-cols-[1fr_auto] gap-6 items-center">
-            <div className="grid gap-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
+          <div className="nft-activity-body grid grid-cols-[1fr_auto] gap-6 max-[480px]:gap-4 items-center">
+            <div className="grid gap-3 min-w-0">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 min-w-0">
                   <span className="w-2.5 h-2.5 rounded-full bg-teal-400 shrink-0" />
-                  <span className="text-sm font-medium text-slate-700 dark:text-slate-300">Received</span>
+                  <span className="text-sm max-[480px]:text-xs font-medium text-slate-700 dark:text-slate-300">Received</span>
                 </div>
-                <span className="text-sm font-bold text-slate-900 dark:text-slate-100">{nftBreakdown.incoming.toLocaleString()}</span>
+                <span className="text-sm max-[480px]:text-xs font-bold text-slate-900 dark:text-slate-100 tabular-nums">{nftBreakdown.incoming.toLocaleString()}</span>
               </div>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 min-w-0">
                   <span className="w-2.5 h-2.5 rounded-full bg-rose-400 shrink-0" />
-                  <span className="text-sm font-medium text-slate-700 dark:text-slate-300">Sent</span>
+                  <span className="text-sm max-[480px]:text-xs font-medium text-slate-700 dark:text-slate-300">Sent</span>
                 </div>
-                <span className="text-sm font-bold text-slate-900 dark:text-slate-100">{nftBreakdown.outgoing.toLocaleString()}</span>
+                <span className="text-sm max-[480px]:text-xs font-bold text-slate-900 dark:text-slate-100 tabular-nums">{nftBreakdown.outgoing.toLocaleString()}</span>
               </div>
               <div className="pt-2 border-t border-gray-100 dark:border-white/10">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-3">
                   <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Net</span>
-                  <span className={`text-sm font-bold ${nftBreakdown.incoming >= nftBreakdown.outgoing ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+                  <span className={`text-sm max-[480px]:text-xs font-bold tabular-nums ${nftBreakdown.incoming >= nftBreakdown.outgoing ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
                     {nftBreakdown.incoming >= nftBreakdown.outgoing ? '+' : ''}{(nftBreakdown.incoming - nftBreakdown.outgoing).toLocaleString()}
                   </span>
                 </div>
               </div>
             </div>
-            <div className="shrink-0">
-              <ResponsiveContainer width={110} height={110}>
+            <div className="nft-activity-donut shrink-0">
+              <ResponsiveContainer width="100%" height="100%">
                 <PieChart role="img" aria-label={`NFT transfers: ${nftBreakdown.incoming} received, ${nftBreakdown.outgoing} sent`}>
                   <Pie
                     data={[
@@ -470,15 +470,15 @@ export function MoneyFlowTab({ wallet }) {
                       { value: nftBreakdown.outgoing, color: '#fb7185' },
                     ]}
                     cx="50%" cy="50%"
-                    innerRadius={30}
-                    outerRadius={48}
+                    innerRadius="58%"
+                    outerRadius="96%"
                     startAngle={90}
                     endAngle={-270}
                     dataKey="value"
                     stroke="none"
                   >
-                    {[nftBreakdown.incoming, nftBreakdown.outgoing].map((entry, index) => (
-                      <Cell key={index} fill={[ '#2dd4bf', '#fb7185' ][index]} />
+                    {[nftBreakdown.incoming, nftBreakdown.outgoing].map((_, index) => (
+                      <Cell key={index} fill={['#2dd4bf', '#fb7185'][index]} />
                     ))}
                   </Pie>
                 </PieChart>

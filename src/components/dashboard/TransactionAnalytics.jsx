@@ -29,6 +29,22 @@ import {
   summarizeSeries,
 } from './transactionAnalytics.utils'
 
+function useCompactViewport(maxWidth = 700) {
+  const [isCompact, setIsCompact] = useState(() => (
+    typeof window !== 'undefined' ? window.matchMedia(`(max-width: ${maxWidth}px)`).matches : false
+  ))
+
+  useEffect(() => {
+    const media = window.matchMedia(`(max-width: ${maxWidth}px)`)
+    const update = () => setIsCompact(media.matches)
+    update()
+    media.addEventListener('change', update)
+    return () => media.removeEventListener('change', update)
+  }, [maxWidth])
+
+  return isCompact
+}
+
 function AnalyticsTooltip({ active, payload, label, series, softMax, clipped, coordinate, viewBox }) {
   if (!active || !payload?.length) return null
 
@@ -74,9 +90,9 @@ function BrushTraveller(props) {
   return (
     <g className="analytics-brush-traveller">
       <rect
-        x={cx - 6}
+        x={cx - 8}
         y={y}
-        width={12}
+        width={16}
         height={height}
         fill="transparent"
         style={{ cursor: 'ew-resize' }}
@@ -101,12 +117,20 @@ function BrushTraveller(props) {
   )
 }
 
+function compactAddress(value) {
+  if (!value || value.length < 12) return value
+  if (!value.startsWith('0x')) return value
+  return `${value.slice(0, 6)}…${value.slice(-4)}`
+}
+
 export function TransactionAnalytics({
   dailyAnalytics,
   addressLabel,
   sourceLabel = 'MyWallet360',
 }) {
   const rangeId = DEFAULT_ANALYTICS_RANGE
+  const isCompact = useCompactViewport(700)
+  const isPhone = useCompactViewport(480)
   const [tabId, setTabId] = useState('transactions')
   const [brushIndexes, setBrushIndexes] = useState({ startIndex: 0, endIndex: 0 })
 
@@ -166,8 +190,13 @@ export function TransactionAnalytics({
 
   if (!dailyAnalytics?.length || !historyData.length || !chartData.length) return null
 
-  const titleAddress = addressLabel || 'wallet'
+  const titleAddress = isCompact ? compactAddress(addressLabel) : (addressLabel || 'wallet')
   const rangeWindow = getRangeWindow(rangeId)
+  const chartMargin = isPhone
+    ? { top: 8, right: 6, bottom: 0, left: 0 }
+    : isCompact
+      ? { top: 10, right: 10, bottom: 0, left: 0 }
+      : { top: 12, right: 16, bottom: 0, left: 0 }
 
   return (
     <section className="card analytics-card p-5 max-[480px]:p-3.5">
@@ -179,16 +208,32 @@ export function TransactionAnalytics({
               Transaction Analytics
             </span>
             <h2 className="text-base font-bold mt-0.5 truncate">
-              {activeTab.title} for {titleAddress}
+              {activeTab.title}{isPhone ? '' : ` for ${titleAddress}`}
             </h2>
             <p className="analytics-source">
-              Source: {sourceLabel}
-              {rangeWindow && (
+              {isPhone ? (
                 <>
-                  {' · '}
-                  {formatAnalyticsDate(rangeWindow.start, { year: 'numeric' })}
-                  {' – '}
-                  {formatAnalyticsDate(rangeWindow.end, { year: 'numeric' })}
+                  {titleAddress}
+                  {rangeWindow && (
+                    <>
+                      {' · '}
+                      {formatAnalyticsDate(rangeWindow.start, { month: 'short', day: 'numeric' })}
+                      {'–'}
+                      {formatAnalyticsDate(rangeWindow.end, { month: 'short', day: 'numeric' })}
+                    </>
+                  )}
+                </>
+              ) : (
+                <>
+                  Source: {sourceLabel}
+                  {rangeWindow && (
+                    <>
+                      {' · '}
+                      {formatAnalyticsDate(rangeWindow.start, { year: 'numeric' })}
+                      {' – '}
+                      {formatAnalyticsDate(rangeWindow.end, { year: 'numeric' })}
+                    </>
+                  )}
                 </>
               )}
             </p>
@@ -208,7 +253,7 @@ export function TransactionAnalytics({
             className={`analytics-tab ${tabId === tab.id ? 'analytics-tab--active' : ''}`}
             onClick={() => setTabId(tab.id)}
           >
-            {tab.label}
+            {isPhone ? tab.label.replace(' Transfers', '') : tab.label}
           </button>
         ))}
       </div>
@@ -221,7 +266,9 @@ export function TransactionAnalytics({
               className="analytics-summary__chip"
               style={{ '--chip-accent': item.color }}
             >
-              <span className="analytics-summary__label">{item.label}</span>
+              <span className="analytics-summary__label">
+                {isPhone ? item.label.replace(' Address', '') : item.label}
+              </span>
               <strong>{formatSeriesValue(item.key, item.total)}</strong>
               <small>peak {formatSeriesValue(item.key, item.peak)}</small>
             </div>
@@ -229,7 +276,7 @@ export function TransactionAnalytics({
         </div>
       )}
 
-      {(bucketed || yScale.clipped) && (
+      {(bucketed || yScale.clipped) && !isPhone && (
         <p className="analytics-bucket-note">
           {bucketed && 'Weekly totals for long history. '}
           {yScale.clipped && (
@@ -244,7 +291,7 @@ export function TransactionAnalytics({
 
       <div className="analytics-chart-area">
         <ResponsiveContainer width="100%" height="100%">
-          <ComposedChart data={chartData} margin={{ top: 12, right: 16, bottom: 0, left: 0 }}>
+          <ComposedChart data={chartData} margin={chartMargin}>
             <defs>
               <linearGradient id="analyticsPrimaryFill" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="0%" stopColor={primaryColor} stopOpacity={0.28} />
@@ -258,29 +305,29 @@ export function TransactionAnalytics({
             <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" vertical={false} />
             <XAxis
               dataKey="date"
-              tick={{ fontSize: 9, fill: 'var(--muted)' }}
+              tick={{ fontSize: isPhone ? 8 : 9, fill: 'var(--muted)' }}
               tickLine={false}
               axisLine={false}
-              tickFormatter={(d) => formatAxisTick(d, { showYear: spansMultipleYears })}
+              tickFormatter={(d) => formatAxisTick(d, { showYear: spansMultipleYears && !isPhone })}
               interval="preserveStartEnd"
-              minTickGap={40}
+              minTickGap={isPhone ? 24 : isCompact ? 32 : 40}
             />
             <YAxis
-              tick={{ fontSize: 9, fill: 'var(--muted)' }}
+              tick={{ fontSize: isPhone ? 8 : 9, fill: 'var(--muted)' }}
               tickLine={false}
               axisLine={false}
-              width={52}
+              width={isPhone ? 34 : isCompact ? 40 : 52}
               domain={yScale.domain}
               allowDataOverflow={false}
               tickFormatter={yTickFormatter}
-              label={{
+              label={isCompact ? undefined : {
                 value: tabId === 'fees' || tabId === 'ether' ? 'ETH' : 'Count',
                 angle: -90,
                 position: 'insideLeft',
                 style: { fill: 'var(--muted)', fontSize: 9 },
               }}
             />
-            {yearBoundaries.map((boundary) => (
+            {!isPhone && yearBoundaries.map((boundary) => (
               <ReferenceLine
                 key={`year-${boundary.year}`}
                 x={boundary.date}
@@ -324,9 +371,9 @@ export function TransactionAnalytics({
                 dataKey={item.key}
                 name={item.label}
                 stroke={item.color}
-                strokeWidth={item.key === primaryKey ? 2.25 : 2}
+                strokeWidth={item.key === primaryKey ? (isPhone ? 2 : 2.25) : (isPhone ? 1.5 : 2)}
                 dot={false}
-                activeDot={{ r: 3.5, strokeWidth: 0, fill: item.color }}
+                activeDot={{ r: isPhone ? 3 : 3.5, strokeWidth: 0, fill: item.color }}
                 isAnimationActive={false}
                 legendType="none"
               />
@@ -334,10 +381,10 @@ export function TransactionAnalytics({
             {chartData.length > 2 && primaryKey && (
               <Brush
                 dataKey="date"
-                height={36}
+                height={isPhone ? 28 : 36}
                 stroke="transparent"
                 fill="rgba(24, 197, 192, 0.12)"
-                travellerWidth={12}
+                travellerWidth={isPhone ? 14 : 12}
                 traveller={<BrushTraveller />}
                 tickFormatter={() => ''}
                 startIndex={brushIndexes.startIndex}
@@ -379,7 +426,7 @@ export function TransactionAnalytics({
         {series.map((item) => (
           <span key={item.key} className="analytics-legend__item">
             <i style={{ background: item.color }} />
-            {item.label}
+            {isPhone ? item.label.replace(' Address', '') : item.label}
           </span>
         ))}
       </div>

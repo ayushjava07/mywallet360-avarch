@@ -276,8 +276,8 @@ export function PortfolioHoldings({ holdings, valuationHistory, isLoading, displ
       </div>
 
       {donutData.length > 0 && (
-        <div className="holdings-donut-section flex gap-6 mb-6 max-[700px]:flex-col">
-          <div className="holdings-donut-wrap shrink-0" style={{ width: 180, height: 180 }}>
+        <div className="holdings-donut-section mb-6">
+          <div className="holdings-donut-wrap">
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
                 <Pie
@@ -285,7 +285,8 @@ export function PortfolioHoldings({ holdings, valuationHistory, isLoading, displ
                   dataKey="rawValue"
                   nameKey="name"
                   cx="50%" cy="50%"
-                  innerRadius={58} outerRadius={84}
+                  innerRadius="68%"
+                  outerRadius="98%"
                   activeIndex={activeSymbol ? donutData.findIndex((d) => d.name === activeSymbol) : undefined}
                   activeShape={renderActiveShape}
                   strokeWidth={0}
@@ -309,12 +310,12 @@ export function PortfolioHoldings({ holdings, valuationHistory, isLoading, displ
                 </Pie>
               </PieChart>
             </ResponsiveContainer>
-            <div className="holdings-donut-center text-center" style={{ marginTop: -140 }}>
+            <div className="holdings-donut-center text-center">
               <strong className="text-lg font-bold">{formatValue(totalRaw)}</strong>
               <span className="text-[9px] text-slate-400 block">Total Value</span>
             </div>
           </div>
-          <div className="holdings-legend flex flex-wrap gap-2 content-start">
+          <div className="holdings-legend">
             {donutData.map((entry) => (
               <div
                 key={entry.name}
