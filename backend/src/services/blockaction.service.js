@@ -12,6 +12,10 @@ import {
   fetchWalletActivityStats,
 } from "./wallet-activity-stats.service.js";
 import {
+  getMethodDisplayLabel,
+  resolveTransactionMethod,
+} from "../utils/transaction-method.js";
+import {
   fromWei,
   normalizePercentages,
   percentage,
@@ -800,7 +804,14 @@ export function buildTimeline(transactions, address, tokenTransfers = []) {
     return {
       hash: transaction.hash,
       timestamp: new Date(Number(transaction.timeStamp) * 1000).toISOString(),
+      blockNumber: Number(transaction.blockNumber || 0),
       type,
+      method: getMethodDisplayLabel(
+        resolveTransactionMethod(transaction, "normal"),
+        false,
+      ),
+      contractTriggered: false,
+      hasTokenAmount: Boolean(value && value.symbol !== "ETH"),
       value,
       from: transaction.from,
       to: transaction.to,
@@ -872,9 +883,12 @@ function emptyDailyBucket() {
     uniqueOutgoingAddresses: new Set(),
     uniqueIncomingAddresses: new Set(),
     ethFees: 0,
+    ethFeesSpent: 0,
+    ethFeesUsed: 0,
     ethSent: 0,
     ethReceived: 0,
     tokenTransfers: 0,
+    tokenContractAddresses: new Set(),
   };
 }
 
@@ -913,10 +927,13 @@ export function buildDailyAnalytics(address, {
     const to = (transaction.to || "").toLowerCase();
     const failed = transaction.isError === "1";
 
+    const feeEth = feePaidEth(transaction);
+
     if (from === wallet && to) {
       bucket.uniqueOutgoingAddresses.add(to);
       if (!failed) {
-        bucket.ethFees += feePaidEth(transaction);
+        bucket.ethFees += feeEth;
+        bucket.ethFeesSpent += feeEth;
         const amount = fromWei(transaction.value);
         if (amount > 0) bucket.ethSent += amount;
       }
@@ -925,6 +942,7 @@ export function buildDailyAnalytics(address, {
     if (to === wallet && from) {
       bucket.uniqueIncomingAddresses.add(from);
       if (!failed) {
+        if (from !== wallet) bucket.ethFeesUsed += feeEth;
         const amount = fromWei(transaction.value);
         if (amount > 0) bucket.ethReceived += amount;
       }
@@ -935,7 +953,10 @@ export function buildDailyAnalytics(address, {
     const timestamp = Number(transfer.timeStamp || 0);
     if (!timestamp) return;
     const date = new Date(timestamp * 1000).toISOString().slice(0, 10);
-    ensure(date).tokenTransfers += 1;
+    const bucket = ensure(date);
+    bucket.tokenTransfers += 1;
+    const contract = (transfer.contractAddress || "").toLowerCase();
+    if (contract) bucket.tokenContractAddresses.add(contract);
   });
 
   return [...byDate.entries()]
@@ -943,16 +964,21 @@ export function buildDailyAnalytics(address, {
     .map(([date, bucket]) => {
       const ethSent = round(bucket.ethSent, 6);
       const ethReceived = round(bucket.ethReceived, 6);
+      const ethFeesSpent = round(bucket.ethFeesSpent, 8);
+      const ethFeesUsed = round(bucket.ethFeesUsed, 8);
       return {
         date,
         transactionCount: bucket.transactionCount,
         uniqueOutgoing: bucket.uniqueOutgoingAddresses.size,
         uniqueIncoming: bucket.uniqueIncomingAddresses.size,
-        ethFees: round(bucket.ethFees, 8),
+        ethFees: ethFeesSpent,
+        ethFeesSpent,
+        ethFeesUsed,
         ethSent,
         ethReceived,
         etherVolume: round(ethSent + ethReceived, 6),
         tokenTransfers: bucket.tokenTransfers,
+        tokenContractsCount: bucket.tokenContractAddresses.size,
       };
     });
 }
@@ -979,10 +1005,13 @@ export function mergeDailyAnalytics(primary = [], secondary = []) {
       uniqueOutgoing: useSecondaryTx ? row.uniqueOutgoing : existing.uniqueOutgoing,
       uniqueIncoming: useSecondaryTx ? row.uniqueIncoming : existing.uniqueIncoming,
       ethFees: useSecondaryTx ? row.ethFees : existing.ethFees,
+      ethFeesSpent: useSecondaryTx ? row.ethFeesSpent : existing.ethFeesSpent,
+      ethFeesUsed: useSecondaryTx ? row.ethFeesUsed : existing.ethFeesUsed,
       ethSent: useSecondaryTx ? row.ethSent : existing.ethSent,
       ethReceived: useSecondaryTx ? row.ethReceived : existing.ethReceived,
       etherVolume: useSecondaryTx ? row.etherVolume : existing.etherVolume,
       tokenTransfers: Math.max(existing.tokenTransfers || 0, row.tokenTransfers || 0),
+      tokenContractsCount: Math.max(existing.tokenContractsCount || 0, row.tokenContractsCount || 0),
     });
   });
 
