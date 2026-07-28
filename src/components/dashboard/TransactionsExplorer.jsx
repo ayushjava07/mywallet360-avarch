@@ -150,9 +150,10 @@ export function TransactionsExplorer({
 
   useEffect(() => {
     setPage(1)
-  }, [activeTab, sort, order, hideLowValue, analysisDays, customRange])
+  }, [analysisDays, customRange])
 
   const toggleSort = (column) => {
+    setPage(1)
     if (sort === column) {
       setOrder((current) => (current === 'desc' ? 'asc' : 'desc'))
       return
@@ -196,7 +197,10 @@ export function TransactionsExplorer({
             role="tab"
             aria-selected={activeTab === tab.id}
             className={`analytics-tab ${activeTab === tab.id ? 'analytics-tab--active' : ''}`}
-            onClick={() => setActiveTab(tab.id)}
+            onClick={() => {
+              setActiveTab(tab.id)
+              setPage(1)
+            }}
           >
             {isPhone ? tab.shortLabel : tab.label}
           </button>
@@ -209,7 +213,10 @@ export function TransactionsExplorer({
           <input
             type="checkbox"
             checked={hideLowValue}
-            onChange={(event) => setHideLowValue(event.target.checked)}
+            onChange={(event) => {
+              setHideLowValue(event.target.checked)
+              setPage(1)
+            }}
           />
           <span>Hide low value</span>
         </label>

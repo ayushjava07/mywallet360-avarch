@@ -136,8 +136,17 @@ export function ContextTooltip({
     setPinned(true)
   }
 
+  const stopRowClick = (event) => {
+    event.stopPropagation()
+  }
+
   return (
-    <span className={`context-tooltip ${className}`.trim()} ref={rootRef}>
+    <span
+      className={`context-tooltip ${className}`.trim()}
+      ref={rootRef}
+      onClick={stopRowClick}
+      onKeyDown={stopRowClick}
+    >
       {mode === 'value' ? (
         <span
           className="context-tooltip__trigger context-tooltip__trigger--value"

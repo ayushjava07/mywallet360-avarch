@@ -331,7 +331,7 @@ export function TransactionAnalytics({
       return
     }
     setBrushIndexes({ startIndex: 0, endIndex: chartData.length - 1 })
-  }, [chartData])
+  }, [chartData, tabId])
 
   const visibleRows = useMemo(() => {
     if (!chartData.length) return []
@@ -352,13 +352,13 @@ export function TransactionAnalytics({
   )
   const spansMultipleYears = yearBoundaries.length > 0
 
-  const yScale = useMemo(
-    () => computeSoftYDomain(
-      visibleRows,
-      visibleSeries.filter((item) => item.yAxisId !== 'right').map((item) => item.key),
-    ),
-    [visibleRows, visibleSeries],
-  )
+  const yScale = useMemo(() => {
+    const leftVisible = visibleSeries.filter((item) => item.yAxisId !== 'right').map((item) => item.key)
+    const leftKeys = leftVisible.length
+      ? leftVisible
+      : series.filter((item) => item.yAxisId !== 'right').map((item) => item.key)
+    return computeSoftYDomain(visibleRows, leftKeys)
+  }, [visibleRows, visibleSeries, series])
 
   /**
    * The right axis must stay mounted while any series still points at it,

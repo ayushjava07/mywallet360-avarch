@@ -218,12 +218,12 @@ export function ActivityAmountWithTooltip({ item }) {
 export function ActivityMetaWithTooltip({ item }) {
   const exact = formatExactTimestamp(item.timestamp)
   const lines = [exact]
-  if (item.blockNumber) {
+  if (item.blockNumber > 0) {
     lines.push(TX_TOOLTIPS.block)
   }
 
   return (
-    <ContextTooltip content={lines.join(' · ')} mode="value" showInfoIcon={Boolean(item.blockNumber)}>
+    <ContextTooltip content={lines.join(' · ')} mode="value" showInfoIcon={item.blockNumber > 0}>
       <span className="transaction__time">{item.meta}</span>
     </ContextTooltip>
   )

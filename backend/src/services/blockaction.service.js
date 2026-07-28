@@ -999,14 +999,17 @@ export function mergeDailyAnalytics(primary = [], secondary = []) {
     }
 
     const useSecondaryTx = (row.transactionCount || 0) > (existing.transactionCount || 0);
+    const pickEthFeesSpent = (row) => row.ethFeesSpent ?? row.ethFees ?? 0
+    const pickEthFeesUsed = (row) => row.ethFeesUsed ?? 0
+
     map.set(row.date, {
       date: row.date,
       transactionCount: useSecondaryTx ? row.transactionCount : existing.transactionCount,
       uniqueOutgoing: useSecondaryTx ? row.uniqueOutgoing : existing.uniqueOutgoing,
       uniqueIncoming: useSecondaryTx ? row.uniqueIncoming : existing.uniqueIncoming,
-      ethFees: useSecondaryTx ? row.ethFees : existing.ethFees,
-      ethFeesSpent: useSecondaryTx ? row.ethFeesSpent : existing.ethFeesSpent,
-      ethFeesUsed: useSecondaryTx ? row.ethFeesUsed : existing.ethFeesUsed,
+      ethFees: useSecondaryTx ? pickEthFeesSpent(row) : pickEthFeesSpent(existing),
+      ethFeesSpent: useSecondaryTx ? pickEthFeesSpent(row) : pickEthFeesSpent(existing),
+      ethFeesUsed: useSecondaryTx ? pickEthFeesUsed(row) : pickEthFeesUsed(existing),
       ethSent: useSecondaryTx ? row.ethSent : existing.ethSent,
       ethReceived: useSecondaryTx ? row.ethReceived : existing.ethReceived,
       etherVolume: useSecondaryTx ? row.etherVolume : existing.etherVolume,
