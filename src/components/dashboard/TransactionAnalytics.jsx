@@ -389,7 +389,7 @@ export function TransactionAnalytics({
     ? formatAnalyticsDate(visibleRows[visibleRows.length - 1].date, { year: 'numeric' })
     : null
 
-  if (!dailyAnalytics?.length || !historyData.length || !chartData.length) return null
+  if (!dailyAnalytics?.length || !chartData.length) return null
 
   const titleAddress = isCompact ? compactAddress(addressLabel) : (addressLabel || 'wallet')
   const rangeWindow = getRangeWindow(rangeId)
