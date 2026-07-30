@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { MaterialIcon } from '../common/MaterialIcon'
 
@@ -42,8 +42,26 @@ function ChartTooltip({ active, payload }) {
   )
 }
 
+function useCompactViewport(maxWidth = 700) {
+  const [isCompact, setIsCompact] = useState(() => (
+    typeof window !== 'undefined' ? window.matchMedia(`(max-width: ${maxWidth}px)`).matches : false
+  ))
+
+  useEffect(() => {
+    const media = window.matchMedia(`(max-width: ${maxWidth}px)`)
+    const update = () => setIsCompact(media.matches)
+    update()
+    media.addEventListener('change', update)
+    return () => media.removeEventListener('change', update)
+  }, [maxWidth])
+
+  return isCompact
+}
+
 export function PortfolioChart({ valuationHistory }) {
   const [chartPeriod, setChartPeriod] = useState('1y')
+  const isCompact = useCompactViewport(700)
+  const isPhone = useCompactViewport(480)
 
   const activeChartLabel = CHART_PERIODS.find((p) => p.value === chartPeriod)?.label || 'Valuation'
 
@@ -81,21 +99,25 @@ export function PortfolioChart({ valuationHistory }) {
   if (filteredData.length === 0) return null
 
   const isPositive = performance !== null ? performance >= 0 : true
+  const chartHeight = isPhone ? 160 : isCompact ? 180 : 200
 
   return (
     <section className="card chart-modern-card p-5 max-[480px]:p-3.5">
-      <div className="flex items-center justify-between flex-wrap gap-3 mb-4">
-        <div className="flex items-center gap-2.5">
-          <MaterialIcon icon="show_chart" className="text-teal-400 text-xl" />
-          <div>
+      <div className="chart-modern-header">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <MaterialIcon icon="show_chart" className="text-teal-400 text-xl shrink-0" />
+          <div className="min-w-0">
             <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-[0.2em]">Portfolio History</span>
-            <h2 className="text-base font-bold mt-0.5">{activeChartLabel} · Current holdings</h2>
+            <h2 className="text-base font-bold mt-0.5 truncate">
+              {activeChartLabel}{isPhone ? '' : ' · Current holdings'}
+            </h2>
           </div>
         </div>
-        <div className="chart-periods flex gap-1">
+        <div className="chart-periods" role="group" aria-label="Portfolio chart range">
           {CHART_PERIODS.map((p) => (
             <button
               key={p.value}
+              type="button"
               className={`chart-period-btn ${chartPeriod === p.value ? 'chart-period-btn--active' : ''}`}
               onClick={() => setChartPeriod(p.value)}
             >
@@ -116,9 +138,14 @@ export function PortfolioChart({ valuationHistory }) {
         )}
       </div>
 
-      <div className="chart-modern-area" style={{ height: 200 }}>
+      <div className="chart-modern-area" style={{ height: chartHeight }}>
         <ResponsiveContainer width="100%" height="100%">
-          <AreaChart data={filteredData} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
+          <AreaChart
+            data={filteredData}
+            margin={isPhone
+              ? { top: 4, right: 2, bottom: 0, left: 0 }
+              : { top: 4, right: 4, bottom: 0, left: 0 }}
+          >
             <defs>
               <linearGradient id="chartGradient" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="0%" stopColor="#18c5c0" stopOpacity={0.25} />
@@ -127,19 +154,19 @@ export function PortfolioChart({ valuationHistory }) {
             </defs>
             <XAxis
               dataKey="date"
-              tick={{ fontSize: 9, fill: 'var(--muted)' }}
+              tick={{ fontSize: isPhone ? 8 : 9, fill: 'var(--muted)' }}
               tickLine={false}
               axisLine={false}
               tickFormatter={(d) => formatChartDate(d)}
               interval="preserveStartEnd"
-              minTickGap={40}
+              minTickGap={isPhone ? 28 : 40}
             />
             <YAxis
-              tick={{ fontSize: 9, fill: 'var(--muted)' }}
+              tick={{ fontSize: isPhone ? 8 : 9, fill: 'var(--muted)' }}
               tickLine={false}
               axisLine={false}
-              tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`}
-              width={40}
+              tickFormatter={(v) => (Math.abs(v) >= 1000 ? `$${(v / 1000).toFixed(0)}k` : `$${Math.round(v)}`)}
+              width={isPhone ? 32 : 40}
             />
             <Tooltip
               content={<ChartTooltip />}
@@ -149,7 +176,7 @@ export function PortfolioChart({ valuationHistory }) {
               type="monotone"
               dataKey="value"
               stroke="#18c5c0"
-              strokeWidth={2}
+              strokeWidth={isPhone ? 1.75 : 2}
               fill="url(#chartGradient)"
               animationDuration={500}
               animationEasing="ease-out"

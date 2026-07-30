@@ -14,18 +14,29 @@ export const ANALYTICS_RANGES = [
   { id: '1m', label: '1M', days: 30 },
 ]
 
+/** Chart rendering mode per analytics tab. */
+export const CHART_TYPES = {
+  transactions: 'area',
+  fees: 'bar',
+  ether: 'bar',
+  tokens: 'combo',
+}
+
 /**
  * Distinct, colorblind-friendlier series colors.
  * Primary stays teal; secondary series use navy + warm accent.
+ * Tokens (not hex) so charts re-tint with the light/dark theme.
  */
 export const SERIES_COLORS = {
-  transactions: '#18c5c0',
-  uniqueOutgoing: '#1e3a5f',
-  uniqueIncoming: '#f59e0b',
-  ethFees: '#18c5c0',
-  ethSent: '#18c5c0',
-  ethReceived: '#1e3a5f',
-  tokenTransfers: '#18c5c0',
+  transactions: 'var(--series-primary)',
+  uniqueOutgoing: 'var(--series-secondary)',
+  uniqueIncoming: 'var(--series-tertiary)',
+  ethFeesSpent: 'var(--series-primary)',
+  ethFeesUsed: 'var(--series-secondary)',
+  ethSent: 'var(--series-primary)',
+  ethReceived: 'var(--series-tertiary)',
+  tokenTransfers: 'var(--series-primary)',
+  tokenContractsCount: 'var(--series-secondary)',
 }
 
 const EMPTY_DAY = {
@@ -33,10 +44,13 @@ const EMPTY_DAY = {
   uniqueOutgoing: 0,
   uniqueIncoming: 0,
   ethFees: 0,
+  ethFeesSpent: 0,
+  ethFeesUsed: 0,
   ethSent: 0,
   ethReceived: 0,
   etherVolume: 0,
   tokenTransfers: 0,
+  tokenContractsCount: 0,
 }
 
 export function parseUtcDate(dateStr) {
@@ -173,11 +187,17 @@ export function maybeBucketWeekly(rows) {
     existing.transactionCount += row.transactionCount || 0
     existing.uniqueOutgoing += row.uniqueOutgoing || 0
     existing.uniqueIncoming += row.uniqueIncoming || 0
-    existing.ethFees += row.ethFees || 0
+    existing.ethFees += row.ethFees || row.ethFeesSpent || 0
+    existing.ethFeesSpent += row.ethFeesSpent || row.ethFees || 0
+    existing.ethFeesUsed += row.ethFeesUsed || 0
     existing.ethSent += row.ethSent || 0
     existing.ethReceived += row.ethReceived || 0
     existing.etherVolume += row.etherVolume || 0
     existing.tokenTransfers += row.tokenTransfers || 0
+    existing.tokenContractsCount = Math.max(
+      existing.tokenContractsCount || 0,
+      row.tokenContractsCount || 0,
+    )
     buckets.set(key, existing)
   })
 
@@ -187,34 +207,80 @@ export function maybeBucketWeekly(rows) {
   }
 }
 
+export function getChartTypeForTab(tabId) {
+  return CHART_TYPES[tabId] || 'area'
+}
+
 export function getSeriesForTab(tabId) {
   switch (tabId) {
     case 'fees':
-      return [{ key: 'ethFees', label: 'ETH Fees Spent', color: SERIES_COLORS.ethFees }]
+      return [
+        { key: 'ethFeesSpent', label: 'ETH Fees Spent', color: SERIES_COLORS.ethFeesSpent, yAxisId: 'left' },
+        { key: 'ethFeesUsed', label: 'ETH Fees Used', color: SERIES_COLORS.ethFeesUsed, yAxisId: 'left' },
+      ]
     case 'ether':
       return [
-        { key: 'ethSent', label: 'ETH Sent', color: SERIES_COLORS.ethSent },
-        { key: 'ethReceived', label: 'ETH Received', color: SERIES_COLORS.ethReceived },
+        { key: 'ethSent', label: 'Sent (Out)', color: SERIES_COLORS.ethSent, yAxisId: 'left' },
+        { key: 'ethReceived', label: 'Receive (In)', color: SERIES_COLORS.ethReceived, yAxisId: 'left' },
       ]
     case 'tokens':
-      return [{ key: 'tokenTransfers', label: 'Token Transfers', color: SERIES_COLORS.tokenTransfers }]
+      return [
+        { key: 'tokenTransfers', label: 'Token Transfers', color: SERIES_COLORS.tokenTransfers, yAxisId: 'left', chartType: 'bar' },
+        { key: 'tokenContractsCount', label: 'Token Contracts Count', color: SERIES_COLORS.tokenContractsCount, yAxisId: 'right', chartType: 'line' },
+      ]
     default:
       return [
-        { key: 'transactionCount', label: 'Transactions', color: SERIES_COLORS.transactions },
-        { key: 'uniqueOutgoing', label: 'Unique Outgoing Address', color: SERIES_COLORS.uniqueOutgoing },
-        { key: 'uniqueIncoming', label: 'Unique Incoming Address', color: SERIES_COLORS.uniqueIncoming },
+        { key: 'transactionCount', label: 'Transactions', color: SERIES_COLORS.transactions, yAxisId: 'left', chartType: 'area' },
+        { key: 'uniqueOutgoing', label: 'Unique Outgoing Address', color: SERIES_COLORS.uniqueOutgoing, yAxisId: 'left', chartType: 'line' },
+        { key: 'uniqueIncoming', label: 'Unique Incoming Address', color: SERIES_COLORS.uniqueIncoming, yAxisId: 'left', chartType: 'line' },
       ]
   }
 }
 
+export function getPrimarySeriesKey(tabId) {
+  return getSeriesForTab(tabId)[0]?.key || 'transactionCount'
+}
+
+export function normalizeDailyRow(row = {}) {
+  const ethFeesSpent = Number(row.ethFeesSpent ?? row.ethFees ?? 0)
+  return {
+    ...EMPTY_DAY,
+    ...row,
+    ethFeesSpent,
+    ethFees: ethFeesSpent,
+    ethFeesUsed: Number(row.ethFeesUsed || 0),
+    tokenContractsCount: Number(row.tokenContractsCount || 0),
+  }
+}
+
+const ETH_VALUE_KEYS = new Set([
+  'ethFees',
+  'ethFeesSpent',
+  'ethFeesUsed',
+  'ethSent',
+  'ethReceived',
+  'etherVolume',
+])
+
 export function formatSeriesValue(key, value) {
   const num = Number(value || 0)
-  if (key === 'ethFees' || key === 'ethSent' || key === 'ethReceived' || key === 'etherVolume') {
+  if (ETH_VALUE_KEYS.has(key)) {
     if (num === 0) return '0 ETH'
     if (num < 0.0001) return `${num.toExponential(2)} ETH`
     return `${num.toLocaleString(undefined, { maximumFractionDigits: 6 })} ETH`
   }
   return num.toLocaleString()
+}
+
+export function formatUsdValue(value, ethPrice) {
+  const price = Number(ethPrice)
+  const num = Number(value || 0)
+  if (!price || !Number.isFinite(price) || price <= 0 || !num) return null
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    maximumFractionDigits: num >= 1000 ? 0 : 2,
+  }).format(num * price)
 }
 
 export function summarizeSeries(rows, series) {
@@ -320,7 +386,8 @@ export function formatYAxisTick(value, tabId = 'transactions') {
   if (abs >= 1000) return `${Number((num / 1000).toFixed(1))}k`
   if (abs >= 1) return Number(num.toFixed(3)).toString()
   if (abs >= 0.01) return Number(num.toFixed(4)).toString()
-  // Small ETH amounts: scientific notation keeps labels distinct.
+  // Plain decimals stay readable down to 0.0001; below that they need exponents.
+  if (abs >= 0.0001) return Number(num.toFixed(6)).toString()
   return num.toExponential(1).replace('+', '')
 }
 
@@ -339,7 +406,6 @@ export function makeUniqueYTickFormatter(tabId = 'transactions') {
 
     if (used.get(label) === num) return label
 
-    // Collision with a different value — force more distinctive formatting.
     if (Math.abs(num) > 0 && Math.abs(num) < 1) {
       label = num.toExponential(2).replace('+', '')
     } else {
@@ -349,4 +415,33 @@ export function makeUniqueYTickFormatter(tabId = 'transactions') {
     used.set(label, num)
     return label
   }
+}
+
+export function createHiddenSeriesState() {
+  return ANALYTICS_TABS.reduce((acc, tab) => {
+    acc[tab.id] = []
+    return acc
+  }, {})
+}
+
+export function toggleHiddenSeries(hiddenByTab, tabId, seriesKey) {
+  const current = hiddenByTab[tabId] || []
+  const next = current.includes(seriesKey)
+    ? current.filter((key) => key !== seriesKey)
+    : [...current, seriesKey]
+  return { ...hiddenByTab, [tabId]: next }
+}
+
+export function isSeriesHidden(hiddenByTab, tabId, seriesKey) {
+  return (hiddenByTab[tabId] || []).includes(seriesKey)
+}
+
+/** True when every visible series is flat zero across the window. */
+export function hasSeriesActivity(rows, series) {
+  if (!rows?.length || !series?.length) return false
+  return rows.some((row) => series.some((item) => (Number(row[item.key]) || 0) > 0))
+}
+
+export function getAxisUnitForTab(tabId) {
+  return tabId === 'fees' || tabId === 'ether' ? 'ETH' : 'Count'
 }

@@ -9,9 +9,10 @@ import {
 
 const CELL_GAP = 2
 const BLOCK_GAP_DESKTOP = 10
-const BLOCK_GAP_MOBILE = 5
+const BLOCK_GAP_MOBILE = 4
 const MIN_CELL_DESKTOP = 8
-const MIN_CELL_MOBILE = 5
+const MIN_CELL_MOBILE = 8
+const MIN_CELL_PHONE = 9
 
 function getIntensity(count) {
   if (count === 0) return 0
@@ -64,14 +65,14 @@ function formatCountValue(value, isLowerBound) {
   return isLowerBound ? `${formatted}+` : formatted
 }
 
-function ActivityStatCard({ title, value, sinceLabel }) {
+function ActivityStatCard({ title, value, sinceLabel, compact }) {
   if (!value) return null
 
   return (
     <div className="heatmap-stat-card">
       <span className="heatmap-stat-card__title">{title}</span>
       <strong className="heatmap-stat-card__value">{value}</strong>
-      {sinceLabel && (
+      {sinceLabel && !compact && (
         <span className="heatmap-stat-card__since">{sinceLabel}</span>
       )}
     </div>
@@ -84,6 +85,7 @@ export function TransactionHeatmap({ dailyTransactionCounts, activityStats, tran
     cellSize: 11,
     blockGap: BLOCK_GAP_DESKTOP,
     isCompact: false,
+    allowScroll: false,
   })
   const wrapRef = useRef(null)
 
@@ -170,17 +172,20 @@ export function TransactionHeatmap({ dailyTransactionCounts, activityStats, tran
     const updateLayout = () => {
       const width = element.clientWidth
       const isCompact = width < 700
+      const isPhone = width < 480
       const blockGap = isCompact ? BLOCK_GAP_MOBILE : BLOCK_GAP_DESKTOP
-      const minCell = isCompact ? MIN_CELL_MOBILE : MIN_CELL_DESKTOP
+      const minCell = isPhone ? MIN_CELL_PHONE : isCompact ? MIN_CELL_MOBILE : MIN_CELL_DESKTOP
       const blockGaps = Math.max(0, monthBlocks.length - 1) * blockGap
       const cellGaps = Math.max(0, totalWeekColumns - monthBlocks.length) * CELL_GAP
       const available = width - blockGaps - cellGaps - 4
-      const computed = Math.floor(available / totalWeekColumns)
+      const computed = Math.floor(available / Math.max(1, totalWeekColumns))
+      const needsScroll = isCompact && computed < minCell
 
       setLayout({
-        cellSize: Math.max(minCell, computed),
+        cellSize: needsScroll ? minCell : Math.max(minCell, computed),
         blockGap,
         isCompact,
+        allowScroll: needsScroll,
       })
     }
 
@@ -191,10 +196,15 @@ export function TransactionHeatmap({ dailyTransactionCounts, activityStats, tran
     return () => observer.disconnect()
   }, [monthBlocks.length, totalWeekColumns])
 
-  const { cellSize, blockGap } = layout
+  const { cellSize, blockGap, isCompact, allowScroll } = layout
 
   if (!range || monthBlocks.length === 0) {
     return null
+  }
+
+  const showCellTooltip = (cell, clientX, clientY) => {
+    if (!cell.isActive) return
+    setTooltip({ data: cell, x: clientX, y: clientY })
   }
 
   return (
@@ -220,26 +230,30 @@ export function TransactionHeatmap({ dailyTransactionCounts, activityStats, tran
             title="Transaction Count"
             value={lifetimeStats.transactionCount}
             sinceLabel={lifetimeStats.transactionSince}
+            compact={isCompact}
           />
           <ActivityStatCard
             title="Active Age"
             value={lifetimeStats.activeAge}
             sinceLabel={lifetimeStats.activeAgeSince}
+            compact={isCompact}
           />
           <ActivityStatCard
             title="Unique Days Active"
             value={lifetimeStats.uniqueDaysActive}
             sinceLabel={lifetimeStats.uniqueDaysSince}
+            compact={isCompact}
           />
           <ActivityStatCard
             title="Longest Streak"
             value={lifetimeStats.longestStreak}
             sinceLabel={lifetimeStats.longestStreakSince}
+            compact={isCompact}
           />
         </div>
       )}
 
-      {lifetimeStats?.isPartial && (
+      {lifetimeStats?.isPartial && !isCompact && (
         <p className="heatmap-partial-note">
           Lifetime stats are based on a sampled transaction scan. Counts may show a lower bound.
         </p>
@@ -247,14 +261,14 @@ export function TransactionHeatmap({ dailyTransactionCounts, activityStats, tran
 
       <div className="heatmap-stats flex flex-wrap items-center gap-x-4 gap-y-1 mb-4 text-xs">
         <span className="text-slate-500 dark:text-slate-400">
-          <strong className="text-slate-900 dark:text-slate-100">{visibleStats.totalTxns.toLocaleString()}</strong> transactions in view
+          <strong className="text-slate-900 dark:text-slate-100">{visibleStats.totalTxns.toLocaleString()}</strong> txns in view
         </span>
         <span className="text-slate-500 dark:text-slate-400">
-          <strong className="text-slate-900 dark:text-slate-100">{visibleStats.activeDays.toLocaleString()}</strong> active days in view
+          <strong className="text-slate-900 dark:text-slate-100">{visibleStats.activeDays.toLocaleString()}</strong> active days
         </span>
       </div>
 
-      <div ref={wrapRef} className="heatmap-wrap">
+      <div ref={wrapRef} className={`heatmap-wrap ${allowScroll ? 'heatmap-wrap--scroll' : ''}`}>
         <div
           className="heatmap-layout heatmap-layout--blocks"
           style={{
@@ -287,17 +301,15 @@ export function TransactionHeatmap({ dailyTransactionCounts, activityStats, tran
                             key={`${cell.date}-${index}`}
                             className={`heatmap-cell${cell.isActive ? ' heatmap-cell--interactive' : ''}${levelClass}`}
                             aria-hidden={!cell.isActive}
-                            onMouseEnter={(e) => {
-                              if (cell.isActive) {
-                                setTooltip({ data: cell, x: e.clientX, y: e.clientY })
-                              }
-                            }}
-                            onMouseMove={(e) => {
-                              if (cell.isActive) {
-                                setTooltip({ data: cell, x: e.clientX, y: e.clientY })
-                              }
-                            }}
+                            onMouseEnter={(e) => showCellTooltip(cell, e.clientX, e.clientY)}
+                            onMouseMove={(e) => showCellTooltip(cell, e.clientX, e.clientY)}
                             onMouseLeave={() => setTooltip(null)}
+                            onTouchStart={(e) => {
+                              const touch = e.touches?.[0]
+                              if (!touch) return
+                              showCellTooltip(cell, touch.clientX, touch.clientY)
+                            }}
+                            onTouchEnd={() => setTooltip(null)}
                           />
                         )
                       })}
@@ -320,6 +332,10 @@ export function TransactionHeatmap({ dailyTransactionCounts, activityStats, tran
           </div>
         </div>
       </div>
+
+      {allowScroll && (
+        <p className="heatmap-scroll-hint">Swipe sideways to explore the full year</p>
+      )}
 
       {tooltip && createPortal(
         <Tooltip data={tooltip.data} x={tooltip.x} y={tooltip.y} />,

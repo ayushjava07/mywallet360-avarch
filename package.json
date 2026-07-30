@@ -8,11 +8,12 @@
     "build": "vite build",
     "preview": "vite preview",
     "lint": "eslint .",
-    "test": "node --test src/**/*.test.js",
+    "test": "node --test 'src/**/*.test.js'",
     "check": "npm run lint && npm test && npm run build && npm --prefix backend test"
   },
   "dependencies": {
     "@iconify-icons/fluent-emoji": "^1.2.11",
+    "@iconify-icons/material-symbols": "^1.2.58",
     "@iconify/react": "^6.0.2",
     "lucide-react": "^1.17.0",
     "react": "^19.1.0",

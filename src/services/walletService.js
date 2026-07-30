@@ -269,6 +269,10 @@ function buildTransactions(timeline) {
       title: item.hash,
       meta: formatRelativeTime(item.timestamp),
       timestamp: item.timestamp,
+      blockNumber: item.blockNumber || 0,
+      method: item.method || title,
+      contractTriggered: Boolean(item.contractTriggered),
+      hasTokenAmount: Boolean(item.hasTokenAmount),
       from: item.from || '—',
       to: item.to || '—',
       amount,
@@ -377,7 +381,7 @@ function buildWallet(address, analytics) {
 
   return {
     id: address.toLowerCase(),
-    portfolioValue: analytics.netWorth,
+    portfolioValue: analytics.portfolioValue,
     portfolioValueSource: analytics.portfolioValueSource,
     portfolioInventory: analytics.portfolioInventory,
     generatedAt: analytics.generatedAt,
@@ -649,6 +653,48 @@ async function getWalletByAddress(address, analysisPeriod = 'ytd', customRange =
   return buildWallet(normalizedAddress, data)
 }
 
+async function getWalletTransactions(address, {
+  type = 'normal',
+  page = 1,
+  limit = 25,
+  analysisDays = 'ytd',
+  customRange = null,
+  sort = 'age',
+  order = 'desc',
+  hideLowValue = false,
+  signal,
+} = {}) {
+  const normalizedAddress = address.toLowerCase()
+  const params = new URLSearchParams({
+    type,
+    page: String(page),
+    limit: String(limit),
+    sort,
+    order,
+    hideLowValue: hideLowValue ? 'true' : 'false',
+  })
+
+  if (customRange?.from && customRange?.to) {
+    params.set('from', customRange.from)
+    params.set('to', customRange.to)
+  } else if (analysisDays === 'ytd') {
+    params.set('period', 'ytd')
+  } else if (analysisDays === 'custom') {
+    throw new Error('Custom range dates are required.')
+  } else {
+    params.set('days', String(analysisDays))
+  }
+
+  const response = await apiFetch(`${API_BASE_URL}/api/wallet/${normalizedAddress}/transactions?${params}`, { signal })
+  const data = await response.json().catch(() => null)
+
+  if (!response.ok) {
+    throw new Error(data?.message || 'Unable to load transactions.')
+  }
+
+  return data
+}
+
 async function getPortfolioInventory(address) {
   const response = await apiFetch(`${API_BASE_URL}/api/wallet/${address}/inventory`)
   const data = await response.json().catch(() => null)
@@ -690,5 +736,6 @@ export const walletService = {
   downloadTransactionReport,
   getPortfolioInventory,
   getWalletByAddress,
+  getWalletTransactions,
   listExampleWallets: () => EXAMPLE_WALLETS,
 }

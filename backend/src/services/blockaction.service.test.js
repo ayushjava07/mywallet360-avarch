@@ -247,8 +247,8 @@ test("daily analytics aggregates tx peers, fees, ether volume, and token transfe
         gasPrice: "1000000000",
       },
     ],
-    tokenTransfers: [{ timeStamp: day }],
-    nftTransfers: [{ timeStamp: day }],
+    tokenTransfers: [{ timeStamp: day, contractAddress: "0xtoken1" }],
+    nftTransfers: [{ timeStamp: day, contractAddress: "0xnft1" }],
   });
 
   assert.equal(rows.length, 1);
@@ -257,10 +257,13 @@ test("daily analytics aggregates tx peers, fees, ether volume, and token transfe
   assert.equal(rows[0].uniqueOutgoing, 1);
   assert.equal(rows[0].uniqueIncoming, 1);
   assert.equal(rows[0].ethFees, 0.000042);
+  assert.equal(rows[0].ethFeesSpent, 0.000042);
+  assert.equal(rows[0].ethFeesUsed, 0.000021);
   assert.equal(rows[0].ethSent, 1);
   assert.equal(rows[0].ethReceived, 0.5);
   assert.equal(rows[0].etherVolume, 1.5);
   assert.equal(rows[0].tokenTransfers, 2);
+  assert.equal(rows[0].tokenContractsCount, 2);
 });
 
 test("mergeDailyAnalytics overlays token transfers onto longer series", () => {

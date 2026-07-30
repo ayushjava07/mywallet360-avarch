@@ -1,5 +1,11 @@
 import { useState } from 'react'
 import { Icon } from '../common/Icon'
+import {
+  ActivityAmountWithTooltip,
+  ActivityHashWithTooltip,
+  ActivityMetaWithTooltip,
+  ActivityTitleWithTooltip,
+} from './transactionTooltipViews'
 import { TransactionModal } from './TransactionModal'
 
 function Transaction({ item, onClick, note }) {
@@ -16,9 +22,9 @@ function Transaction({ item, onClick, note }) {
         </span>
       </div>
       <div className="transaction__main grid min-w-0 gap-1">
-        <strong>{item.displayTitle}</strong>
+        <ActivityTitleWithTooltip item={item} />
         <div className="transaction__context">
-          <span className="transaction__protocol">{item.protocol}</span>
+          <ActivityHashWithTooltip hash={item.title} label={item.protocol} />
           <span aria-hidden="true">•</span>
           <span className="chain-badge">{item.chain}</span>
         </div>
@@ -29,22 +35,14 @@ function Transaction({ item, onClick, note }) {
         )}
       </div>
       <div className="transaction__amount">
-        {item.amount ? (
-          <>
-            <strong className={item.positive ? 'positive' : ''}>{item.amount}</strong>
-            <span>{item.crypto}</span>
-          </>
-        ) : (
-          <span className="text-slate-400 text-[11px]">—</span>
-        )}
+        <ActivityAmountWithTooltip item={item} />
       </div>
-      <span className="transaction__time">{item.meta}</span>
+      <ActivityMetaWithTooltip item={item} />
     </article>
   )
 }
 
-export function Activity({ transactions, periodLabel }) {
-  const [showAll, setShowAll] = useState(false)
+export function Activity({ transactions, periodLabel, onSeeAll }) {
   const [selectedTx, setSelectedTx] = useState(null)
   const [notes, setNotes] = useState(() => {
     try {
@@ -54,7 +52,7 @@ export function Activity({ transactions, periodLabel }) {
     }
   })
 
-  const visibleTransactions = showAll ? transactions : transactions.slice(0, 3)
+  const visibleTransactions = transactions.slice(0, 3)
 
   return (
     <>
@@ -65,9 +63,9 @@ export function Activity({ transactions, periodLabel }) {
               <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500 dark:text-slate-400">{periodLabel}</span>
               <h2>Recent Activity</h2>
             </div>
-            {transactions.length > 3 && (
-              <button type="button" onClick={() => setShowAll((value) => !value)}>
-                {showAll ? 'Show Less' : 'See All'}
+            {transactions.length > 3 && onSeeAll && (
+              <button type="button" onClick={onSeeAll}>
+                See All
               </button>
             )}
           </div>
