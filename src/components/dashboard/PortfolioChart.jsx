@@ -1,18 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { MaterialIcon } from '../common/MaterialIcon'
-
-const DAY_MS = 86_400_000
-
-const CHART_PERIODS = [
-  { value: '1d', label: '1D' },
-  { value: '7d', label: '7D' },
-  { value: '30d', label: '30D' },
-  { value: '90d', label: '90D' },
-  { value: 'ytd', label: 'YTD' },
-  { value: '1y', label: '1Y' },
-  { value: 'all', label: 'ALL' },
-]
+import {
+  PORTFOLIO_CHART_PERIODS,
+  computePeriodChange,
+  filterHistoryByPeriod,
+  formatPortfolioValue,
+} from './portfolio.utils'
 
 const formatChartDate = (dateStr, options = {}) => {
   const d = new Date(`${dateStr}T00:00:00Z`)
@@ -24,20 +18,15 @@ const formatChartDate = (dateStr, options = {}) => {
   }).format(d)
 }
 
-const formatUsd = (v) => new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'USD',
-  maximumFractionDigits: 0,
-  notation: Math.abs(v) >= 1_000_000 ? 'compact' : 'standard',
-}).format(v)
-
-function ChartTooltip({ active, payload }) {
+function ChartTooltip({ active, payload, displayMode, ethPrice }) {
   if (!active || !payload?.[0]) return null
   const point = payload[0].payload
   return (
     <div className="chart-tooltip-modern">
       <span className="chart-tooltip-date">{formatChartDate(point.date, { year: 'numeric' })}</span>
-      <strong className="chart-tooltip-value">{formatUsd(point.value)}</strong>
+      <strong className="chart-tooltip-value">
+        {formatPortfolioValue(point.value, { displayMode, ethPrice })}
+      </strong>
     </div>
   )
 }
@@ -58,48 +47,50 @@ function useCompactViewport(maxWidth = 700) {
   return isCompact
 }
 
-export function PortfolioChart({ valuationHistory }) {
-  const [chartPeriod, setChartPeriod] = useState('1y')
+export function PortfolioChart({
+  valuationHistory,
+  displayMode = 'usd',
+  ethPrice,
+  chartPeriod: controlledPeriod,
+  onChartPeriodChange,
+}) {
+  const [internalPeriod, setInternalPeriod] = useState('1y')
+  const chartPeriod = controlledPeriod ?? internalPeriod
+  const setChartPeriod = onChartPeriodChange ?? setInternalPeriod
   const isCompact = useCompactViewport(700)
   const isPhone = useCompactViewport(480)
 
-  const activeChartLabel = CHART_PERIODS.find((p) => p.value === chartPeriod)?.label || 'Valuation'
+  const activeChartLabel = PORTFOLIO_CHART_PERIODS.find((p) => p.value === chartPeriod)?.label || 'Valuation'
 
-  const filteredData = useMemo(() => {
-    if (!valuationHistory || valuationHistory.length === 0) return []
+  const filteredData = useMemo(
+    () => filterHistoryByPeriod(valuationHistory, chartPeriod),
+    [valuationHistory, chartPeriod],
+  )
 
-    const sorted = [...valuationHistory]
-      .map((p) => ({ ...p, dateObj: new Date(`${p.date}T00:00:00Z`) }))
-      .sort((a, b) => a.dateObj - b.dateObj)
+  const periodStats = useMemo(
+    () => computePeriodChange(valuationHistory, chartPeriod),
+    [valuationHistory, chartPeriod],
+  )
 
-    if (chartPeriod === 'all') return sorted
+  if (!valuationHistory?.length) {
+    return (
+      <section className="card chart-modern-card p-5 max-[480px]:p-3.5">
+        <p className="text-sm text-[var(--muted)]">Portfolio history unavailable for this wallet.</p>
+      </section>
+    )
+  }
 
-    const now = new Date()
-    let cutoff
-    switch (chartPeriod) {
-      case '1d': cutoff = new Date(now.getTime() - DAY_MS); break
-      case '7d': cutoff = new Date(now.getTime() - 7 * DAY_MS); break
-      case '30d': cutoff = new Date(now.getTime() - 30 * DAY_MS); break
-      case '90d': cutoff = new Date(now.getTime() - 90 * DAY_MS); break
-      case 'ytd': cutoff = new Date(now.getFullYear(), 0, 1); break
-      default: cutoff = new Date(now.getTime() - 365 * DAY_MS); break
-    }
+  if (filteredData.length === 0) {
+    return (
+      <section className="card chart-modern-card p-5 max-[480px]:p-3.5">
+        <p className="text-sm text-[var(--muted)]">No valuation points in the selected range.</p>
+      </section>
+    )
+  }
 
-    return sorted.filter((p) => p.dateObj >= cutoff)
-  }, [valuationHistory, chartPeriod])
-
-  const performance = useMemo(() => {
-    if (filteredData.length < 2) return null
-    const first = filteredData[0]?.value
-    const last = filteredData[filteredData.length - 1]?.value
-    if (!first || !last || first === 0) return null
-    return ((last - first) / Math.abs(first)) * 100
-  }, [filteredData])
-
-  if (filteredData.length === 0) return null
-
-  const isPositive = performance !== null ? performance >= 0 : true
+  const isPositive = periodStats ? periodStats.changePercent >= 0 : true
   const chartHeight = isPhone ? 160 : isCompact ? 180 : 200
+  const latestValue = filteredData[filteredData.length - 1]?.value || 0
 
   return (
     <section className="card chart-modern-card p-5 max-[480px]:p-3.5">
@@ -114,12 +105,13 @@ export function PortfolioChart({ valuationHistory }) {
           </div>
         </div>
         <div className="chart-periods" role="group" aria-label="Portfolio chart range">
-          {CHART_PERIODS.map((p) => (
+          {PORTFOLIO_CHART_PERIODS.map((p) => (
             <button
               key={p.value}
               type="button"
               className={`chart-period-btn ${chartPeriod === p.value ? 'chart-period-btn--active' : ''}`}
               onClick={() => setChartPeriod(p.value)}
+              aria-pressed={chartPeriod === p.value}
             >
               {p.label}
             </button>
@@ -129,14 +121,22 @@ export function PortfolioChart({ valuationHistory }) {
 
       <div className="chart-modern-value mb-3">
         <strong className={`text-2xl font-bold ${isPositive ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
-          {formatUsd(filteredData[filteredData.length - 1]?.value || 0)}
+          {formatPortfolioValue(latestValue, { displayMode, ethPrice })}
         </strong>
-        {performance !== null && (
+        {periodStats && (
           <span className={`ml-2 text-sm font-semibold ${isPositive ? 'text-emerald-500' : 'text-red-500'}`}>
-            {isPositive ? '+' : ''}{performance.toFixed(2)}%
+            {isPositive ? '+' : ''}{periodStats.changePercent.toFixed(2)}%
           </span>
         )}
       </div>
+
+      {periodStats && (
+        <div className="portfolio-chart-stats">
+          <span>High {formatPortfolioValue(periodStats.high, { displayMode, ethPrice })}</span>
+          <span>Low {formatPortfolioValue(periodStats.low, { displayMode, ethPrice })}</span>
+          <span>{periodStats.points} points</span>
+        </div>
+      )}
 
       <div className="chart-modern-area" style={{ height: chartHeight }}>
         <ResponsiveContainer width="100%" height="100%">
@@ -165,11 +165,17 @@ export function PortfolioChart({ valuationHistory }) {
               tick={{ fontSize: isPhone ? 8 : 9, fill: 'var(--muted)' }}
               tickLine={false}
               axisLine={false}
-              tickFormatter={(v) => (Math.abs(v) >= 1000 ? `$${(v / 1000).toFixed(0)}k` : `$${Math.round(v)}`)}
+              tickFormatter={(v) => {
+                if (displayMode === 'tokens' && ethPrice) {
+                  const eth = v / ethPrice
+                  return eth >= 1 ? `${eth.toFixed(1)}Ξ` : `${eth.toFixed(3)}Ξ`
+                }
+                return Math.abs(v) >= 1000 ? `$${(v / 1000).toFixed(0)}k` : `$${Math.round(v)}`
+              }}
               width={isPhone ? 32 : 40}
             />
             <Tooltip
-              content={<ChartTooltip />}
+              content={<ChartTooltip displayMode={displayMode} ethPrice={ethPrice} />}
               cursor={{ stroke: 'var(--muted)', strokeDasharray: '3 3', opacity: 0.4 }}
             />
             <Area

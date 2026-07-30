@@ -6,8 +6,7 @@ import { DashboardBar } from './components/dashboard/DashboardBar'
 import { DashboardLoader } from './components/dashboard/DashboardLoader'
 import { Insights } from './components/dashboard/Insights'
 import { MoneyFlowTab } from './components/dashboard/MoneyFlowTab'
-import { PortfolioChart } from './components/dashboard/PortfolioChart'
-import { PortfolioHoldings } from './components/dashboard/PortfolioHoldings'
+import { PortfolioTab } from './components/dashboard/PortfolioTab'
 import { TransactionHeatmap } from './components/dashboard/TransactionHeatmap'
 import { TransactionsExplorer } from './components/dashboard/TransactionsExplorer'
 import { TransactionAnalytics } from './components/dashboard/TransactionAnalytics'
@@ -155,22 +154,14 @@ export default function App() {
           )}
 
           {activeTab === 'Portfolio' && (
-            <main className={`grid gap-9 max-[700px]:gap-6 ${isLoading ? 'dashboard-loading' : 'dashboard-ready'}`} key={`portfolio-${wallet.id}`}>
+            <main className={`${isLoading ? 'dashboard-loading' : 'dashboard-ready'}`} key={`portfolio-${wallet.id}`}>
               {isLoading && <DashboardLoader />}
-              <DashboardBar
+              <PortfolioTab
+                wallet={wallet}
                 displayMode={displayMode}
                 onDisplayModeChange={setDisplayMode}
-              />
-              <PortfolioHoldings
-                holdings={wallet.holdings}
-                valuationHistory={wallet.balance?.history}
                 isLoading={isLoading}
-                displayMode={displayMode}
                 ethPrice={wallet.ethPrice}
-                wallet={wallet}
-              />
-              <PortfolioChart
-                valuationHistory={wallet.valuationHistory}
               />
             </main>
           )}
