@@ -40,6 +40,12 @@ export const walletAnalysisRateLimit = createRateLimit({
   message: "Too many wallet analysis requests. Please try again shortly.",
 });
 
+export const walletInventoryRateLimit = createRateLimit({
+  limit: positiveInteger(process.env.WALLET_INVENTORY_RATE_LIMIT_MAX, 40),
+  code: "WALLET_INVENTORY_RATE_LIMITED",
+  message: "Too many inventory status requests. Please try again shortly.",
+});
+
 export const domainResolutionRateLimit = createRateLimit({
   limit: positiveInteger(process.env.DOMAIN_RESOLUTION_RATE_LIMIT_MAX, 30),
   code: "DOMAIN_RESOLUTION_RATE_LIMITED",

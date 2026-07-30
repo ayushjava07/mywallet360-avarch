@@ -154,18 +154,22 @@ function getPortfolioInventoryEntry(address) {
 }
 
 async function aggregatePortfolioInventory(address, firstPage) {
-  let tokenHoldingsCount = firstPage.length;
+  let tokenHoldingsCount = Array.isArray(firstPage) ? firstPage.length : 0;
   let tokenValueUsd = 0;
   let pricedCount = 0;
-  let previousPage = firstPage;
+  let previousPage = Array.isArray(firstPage) ? firstPage : [];
 
-  const firstSummary = summarizeEtherscanTokenPortfolio(firstPage);
+  const firstSummary = summarizeEtherscanTokenPortfolio(previousPage);
   if (firstSummary) {
     tokenValueUsd += firstSummary.valueUsd;
     pricedCount += firstSummary.pricedCount;
   }
 
-  for (let page = 2; previousPage.length === INVENTORY_PAGE_SIZE; page += 1) {
+  if (!Array.isArray(firstPage)) {
+    return { tokenHoldingsCount, tokenValueUsd, pricedCount };
+  }
+
+  for (let page = 2; page <= MAX_PAGES && previousPage.length === INVENTORY_PAGE_SIZE; page += 1) {
     const result = await scheduleInventoryRequest(() => blockActionRequest({
       module: "account",
       action: "addresstokenbalance",
@@ -173,6 +177,11 @@ async function aggregatePortfolioInventory(address, firstPage) {
       page,
       offset: INVENTORY_PAGE_SIZE,
     }));
+
+    if (!Array.isArray(result)) {
+      break;
+    }
+
     tokenHoldingsCount += result.length;
     const pageSummary = summarizeEtherscanTokenPortfolio(result);
     if (pageSummary) {

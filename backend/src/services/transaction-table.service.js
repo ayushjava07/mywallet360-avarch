@@ -20,10 +20,9 @@ const ACTION_BY_TYPE = {
 };
 
 const ALLOWED_TYPES = new Set(Object.keys(ACTION_BY_TYPE));
-const ALLOWED_PERIODS = new Set(["ytd", 1, 7, 30, 365]);
 
 function normalizePeriod(analysisPeriod) {
-  if (analysisPeriod === "ytd") return "ytd";
+  if (analysisPeriod === "ytd" || analysisPeriod === "custom") return analysisPeriod;
   const days = Number(analysisPeriod);
   if ([1, 7, 30, 365].includes(days)) return days;
   throw new Error("Invalid analysis period");
@@ -232,8 +231,12 @@ export async function getPaginatedWalletTransactions({
 
   if (customRange?.from && customRange?.to) {
     // custom ranges are always allowed when both dates are present
-  } else if (!ALLOWED_PERIODS.has(analysisPeriod) && analysisPeriod !== "custom") {
-    throw new Error("Invalid analysis period");
+  } else {
+    try {
+      analysisPeriod = normalizePeriod(analysisPeriod);
+    } catch {
+      throw new Error("Invalid analysis period");
+    }
   }
 
   const periodWindow = await resolvePeriodWindow(analysisPeriod, customRange);
@@ -242,6 +245,7 @@ export async function getPaginatedWalletTransactions({
   let upstreamPage = safePage;
   let hasMore = false;
   let fillAttempts = 0;
+  const paginationMode = safeSort === "amount" ? "window" : "server";
 
   if (safeSort === "amount") {
     while (rows.length < safeLimit && fillAttempts < MAX_FILL_PAGES) {
@@ -261,7 +265,6 @@ export async function getPaginatedWalletTransactions({
         .filter((row) => passesLowValueFilter(row, hideLowValue));
 
       rows.push(...mapped);
-      hasMore = batch.length >= safeLimit;
       upstreamPage += 1;
       fillAttempts += 1;
 
@@ -269,6 +272,8 @@ export async function getPaginatedWalletTransactions({
         hasMore = false;
         break;
       }
+
+      hasMore = true;
     }
 
     rows = sortRows(rows, "amount", safeOrder).slice(0, safeLimit);
@@ -312,10 +317,12 @@ export async function getPaginatedWalletTransactions({
     hideLowValue: Boolean(hideLowValue),
     period: periodWindow,
     rows,
-    hasMore: hasMore || rows.length >= safeLimit,
-    paginationMode: "server",
+    hasMore: paginationMode === "window" ? hasMore : (hasMore || rows.length >= safeLimit),
+    paginationMode,
   };
 }
+
+export { normalizePeriod };
 
 export const TRANSACTION_TABLE_CONSTANTS = {
   DEFAULT_LIMIT,

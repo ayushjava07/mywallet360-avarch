@@ -313,17 +313,17 @@ export function TransactionAnalytics({
     [series, hiddenKeys],
   )
 
-  const { data: historyData, bucketed } = useMemo(() => {
+  const { data: chartData, bucketed } = useMemo(() => {
     const normalized = [...(dailyAnalytics || [])]
       .map(normalizeDailyRow)
       .sort((a, b) => (a.date < b.date ? -1 : 1))
-    return maybeBucketWeekly(normalized)
-  }, [dailyAnalytics])
-
-  const chartData = useMemo(
-    () => buildRangedChartData(historyData, rangeId).map(normalizeDailyRow),
-    [historyData, rangeId],
-  )
+    const ranged = buildRangedChartData(normalized, rangeId)
+    const bucketedResult = maybeBucketWeekly(ranged)
+    return {
+      data: bucketedResult.data.map(normalizeDailyRow),
+      bucketed: bucketedResult.bucketed,
+    }
+  }, [dailyAnalytics, rangeId])
 
   useEffect(() => {
     if (!chartData.length) {

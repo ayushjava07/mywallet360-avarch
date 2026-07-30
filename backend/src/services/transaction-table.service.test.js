@@ -7,8 +7,15 @@ import {
 } from "../utils/transaction-method.js";
 import {
   mapTransactionRow,
+  normalizePeriod,
   resolveDirection,
 } from "./transaction-table.service.js";
+
+test("normalizePeriod accepts numeric strings", () => {
+  assert.equal(normalizePeriod("30"), 30);
+  assert.equal(normalizePeriod("ytd"), "ytd");
+  assert.throws(() => normalizePeriod("20"), /Invalid analysis period/);
+});
 
 test("resolveTransactionMethod labels native transfers and contract calls", () => {
   assert.equal(

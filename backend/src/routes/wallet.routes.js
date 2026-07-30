@@ -4,11 +4,11 @@ import {
   getWalletProfile,
   getWalletTransactions,
 } from "../controllers/wallet.controller.js";
-import { walletAnalysisRateLimit } from "../middleware/rate-limit.middleware.js";
+import { walletAnalysisRateLimit, walletInventoryRateLimit } from "../middleware/rate-limit.middleware.js";
 
 const router = express.Router();
 
-router.get("/:address/inventory", walletAnalysisRateLimit, getWalletInventory);
+router.get("/:address/inventory", walletInventoryRateLimit, getWalletInventory);
 router.get("/:address/transactions", walletAnalysisRateLimit, getWalletTransactions);
 router.get("/:address", walletAnalysisRateLimit, getWalletProfile);
 

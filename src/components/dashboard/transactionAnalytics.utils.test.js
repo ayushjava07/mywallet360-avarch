@@ -150,6 +150,20 @@ test('maybeBucketWeekly buckets long spans', () => {
   assert.ok(data.length < rows.length)
 })
 
+test('1M range keeps daily rows when lifetime history is long', () => {
+  const rows = []
+  for (let i = 0; i < 800; i += 1) {
+    const date = new Date(Date.UTC(2020, 0, 1 + i)).toISOString().slice(0, 10)
+    rows.push({ date, transactionCount: 1 })
+  }
+
+  const ranged = buildRangedChartData(rows, '1m', NOW)
+  const { data, bucketed } = maybeBucketWeekly(ranged)
+
+  assert.equal(bucketed, false)
+  assert.equal(data.length, 30)
+})
+
 test('getYearBoundaryDates marks year changes', () => {
   const boundaries = getYearBoundaryDates([
     { date: '2024-11-01' },
