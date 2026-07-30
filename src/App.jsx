@@ -12,7 +12,6 @@ import { TransactionsExplorer } from './components/dashboard/TransactionsExplore
 import { TransactionAnalytics } from './components/dashboard/TransactionAnalytics'
 import { WalletHealth } from './components/dashboard/WalletHealth'
 import { WalletPersonality } from './components/dashboard/WalletPersonality'
-import { LandingPreview } from './components/landing/LandingPreview'
 import { BottomNav } from './components/layout/BottomNav'
 import { Header } from './components/layout/Header'
 import { useTheme } from './hooks/useTheme'
@@ -178,14 +177,12 @@ export default function App() {
           <BottomNav active={activeTab} onChange={setActiveTab} />
         </>
       ) : (
-        <>
+        <main className="wallet-empty-state grid min-h-[58vh] place-content-center justify-items-center gap-3 rounded-[28px] border border-dashed border-[rgba(44,122,123,.2)] bg-white/55 px-6 py-12 text-center dark:border-[var(--border)] dark:bg-[rgba(17,24,39,.55)]">
           {isLoading && <DashboardLoader />}
-          <LandingPreview
-            exampleWallets={exampleWallets}
-            onSelectExample={selectExampleWallet}
-            isLoading={isLoading}
-          />
-        </>
+          <span>Wallet analytics</span>
+          <h2>Enter a wallet address or ENS name</h2>
+          <p>Search an Ethereum address or .eth name to load its on-chain analytics.</p>
+        </main>
       )}
     </div>
   )
