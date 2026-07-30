@@ -381,7 +381,7 @@ function buildWallet(address, analytics) {
 
   return {
     id: address.toLowerCase(),
-    portfolioValue: analytics.netWorth,
+    portfolioValue: analytics.portfolioValue,
     portfolioValueSource: analytics.portfolioValueSource,
     portfolioInventory: analytics.portfolioInventory,
     generatedAt: analytics.generatedAt,
@@ -662,6 +662,7 @@ async function getWalletTransactions(address, {
   sort = 'age',
   order = 'desc',
   hideLowValue = false,
+  signal,
 } = {}) {
   const normalizedAddress = address.toLowerCase()
   const params = new URLSearchParams({
@@ -684,7 +685,7 @@ async function getWalletTransactions(address, {
     params.set('days', String(analysisDays))
   }
 
-  const response = await apiFetch(`${API_BASE_URL}/api/wallet/${normalizedAddress}/transactions?${params}`)
+  const response = await apiFetch(`${API_BASE_URL}/api/wallet/${normalizedAddress}/transactions?${params}`, { signal })
   const data = await response.json().catch(() => null)
 
   if (!response.ok) {

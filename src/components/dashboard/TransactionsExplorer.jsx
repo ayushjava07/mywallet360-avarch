@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { ArrowLeft, Check, ChevronDown, ChevronUp, Copy } from 'lucide-react'
 import { MaterialIcon } from '../common/MaterialIcon'
 import { walletService } from '../../services/walletService'
@@ -116,37 +116,48 @@ export function TransactionsExplorer({
     hasMore,
   })
 
-  const loadRows = useCallback(async () => {
-    setIsLoading(true)
-    setError('')
+  useEffect(() => {
+    const controller = new AbortController()
+    let active = true
 
-    try {
-      const payload = await walletService.getWalletTransactions(walletAddress, {
-        type: activeTab,
-        page,
-        limit: PAGE_SIZE,
-        analysisDays,
-        customRange,
-        sort,
-        order,
-        hideLowValue,
-      })
+    ;(async () => {
+      setIsLoading(true)
+      setError('')
 
-      setRows(payload.rows || [])
-      setHasMore(Boolean(payload.hasMore))
-      setPaginationMode(payload.paginationMode || 'server')
-    } catch (requestError) {
-      setRows([])
-      setHasMore(false)
-      setError(requestError.message || 'Unable to load transactions.')
-    } finally {
-      setIsLoading(false)
+      try {
+        const payload = await walletService.getWalletTransactions(walletAddress, {
+          type: activeTab,
+          page,
+          limit: PAGE_SIZE,
+          analysisDays,
+          customRange,
+          sort,
+          order,
+          hideLowValue,
+          signal: controller.signal,
+        })
+
+        if (!active) return
+
+        setRows(payload.rows || [])
+        setHasMore(Boolean(payload.hasMore))
+        setPaginationMode(payload.paginationMode || 'server')
+      } catch (requestError) {
+        if (!active || controller.signal.aborted) return
+
+        setRows([])
+        setHasMore(false)
+        setError(requestError.message || 'Unable to load transactions.')
+      } finally {
+        if (active) setIsLoading(false)
+      }
+    })()
+
+    return () => {
+      active = false
+      controller.abort()
     }
   }, [walletAddress, activeTab, page, sort, order, hideLowValue, analysisDays, customRange])
-
-  useEffect(() => {
-    loadRows()
-  }, [loadRows])
 
   useEffect(() => {
     setPage(1)

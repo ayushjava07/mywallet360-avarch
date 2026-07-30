@@ -61,7 +61,10 @@ export function getAmountTooltip({
 }) {
   if (hasTokenAmount) return TX_TOOLTIPS.tokenAmount
   const normalized = normalizeMethodKey(method)
-  const isZeroEth = amountEth === 0 || amountEth === null || amountDisplay === '—' || amountDisplay === '0 ETH'
+  const isZeroEth = amountEth === 0
+    || amountDisplay === '—'
+    || amountDisplay === '0 ETH'
+    || (amountDisplay != null && /^0(\.0+)?\s*ETH$/i.test(String(amountDisplay)))
   if (normalized === 'Contract Interaction' && isZeroEth) {
     return TX_TOOLTIPS.zeroEth
   }

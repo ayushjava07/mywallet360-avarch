@@ -52,6 +52,20 @@ describe('transactionTooltips.utils', () => {
       hasTokenAmount: false,
       amountDisplay: '0 ETH',
     }), null)
+
+    assert.equal(getAmountTooltip({
+      method: 'Contract Interaction',
+      amountEth: null,
+      hasTokenAmount: false,
+      amountDisplay: '1.25 ETH',
+    }), null)
+
+    assert.equal(getAmountTooltip({
+      method: 'Contract Interaction',
+      amountEth: null,
+      hasTokenAmount: false,
+      amountDisplay: '—',
+    }), TX_TOOLTIPS.zeroEth)
   })
 
   it('builds ENS tooltip with full address', () => {

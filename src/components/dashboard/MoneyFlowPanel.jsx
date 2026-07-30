@@ -103,52 +103,58 @@ export function MoneyFlowPanel({
   const [displayMode, setDisplayMode] = useState('usd')
   const [hoveredSegment, setHoveredSegment] = useState(null)
 
-  const net = netGrowthValue(flow)
-  const ethNet = Number(flow.ethNet ?? 0)
-  const useUsd = displayMode === 'usd' && (flow.received.usdAmount != null || net.isUsd)
+  const received = flow?.received ?? {}
+  const spent = flow?.spent ?? {}
+  const net = netGrowthValue(flow ?? { received, spent })
+  const ethNet = Number(flow?.ethNet ?? 0)
+  const useUsd = displayMode === 'usd' && net.isUsd
 
   const netDisplay = useUsd
-    ? formatFlowDisplay(net.isUsd ? net.value : (flow.received.usdAmount - flow.spent.usdAmount), { isUsd: true, signed: true })
-    : formatFlowDisplay(net.isUsd ? ethNet : net.value, { signed: true })
+    ? formatFlowDisplay(net.value, { isUsd: true, signed: true })
+    : formatFlowDisplay(ethNet, { signed: true })
 
   const donutData = useMemo(() => {
-    const receivedVal = Math.max(Number(flow.received.amount) || 0, flowStats?.incomingCount || 0, 0.001)
-    const spentVal = Math.max(Number(flow.spent.amount) || 0, flowStats?.outgoingCount || 0, 0.001)
-    const total = receivedVal + spentVal
+    const receivedEth = Number(received.amount) || 0
+    const spentEth = Number(spent.amount) || 0
+    const hasEthVolume = receivedEth > 0 || spentEth > 0
+    const receivedVal = hasEthVolume
+      ? Math.max(receivedEth, 0.001)
+      : Math.max(flowStats?.incomingCount || 0, 0.001)
+    const spentVal = hasEthVolume
+      ? Math.max(spentEth, 0.001)
+      : Math.max(flowStats?.outgoingCount || 0, 0.001)
     return [
       {
         name: 'Received',
         filter: 'in',
         value: receivedVal,
         color: '#38a879',
-        percent: flow.received.percent,
-        display: useUsd && flow.received.usd
-          ? flow.received.usd
-          : flow.received.value,
+        percent: received.percent,
+        display: useUsd && received.usd
+          ? received.usd
+          : received.value,
       },
       {
         name: 'Spent',
         filter: 'out',
         value: spentVal,
         color: '#d97883',
-        percent: flow.spent.percent,
-        display: useUsd && flow.spent.usd
-          ? flow.spent.usd
-          : flow.spent.value,
+        percent: spent.percent,
+        display: useUsd && spent.usd
+          ? spent.usd
+          : spent.value,
       },
-    ].map((item) => ({
-      ...item,
-      share: total > 0 ? Math.round((item.value / total) * 100) : 50,
-    }))
-  }, [flow, flowStats, useUsd])
+    ]
+  }, [received, spent, flowStats, useUsd])
 
   const toggleFilter = (filterId) => {
     onFilterChange?.(activeFilter === filterId ? 'all' : filterId)
   }
 
-  const incomingShare = flowStats
-    ? (flowStats.incomingCount / Math.max(flowStats.incomingCount + flowStats.outgoingCount, 1)) * 100
-    : flow.received.percent
+  const donutTotal = donutData[0].value + donutData[1].value
+  const incomingShare = donutTotal > 0
+    ? (donutData[0].value / donutTotal) * 100
+    : 50
 
   return (
     <div className="money-flow-panel space-y-[18px]">
@@ -187,7 +193,7 @@ export function MoneyFlowPanel({
           </h2>
           {useUsd && (
             <span className="money-flow-hero__eth-alt">
-              {ethNet >= 0 ? '+' : ''}{ethNet.toLocaleString()} ETH
+              {ethNet >= 0 ? '+' : ''}{ethNet.toLocaleString(undefined, { maximumFractionDigits: 4 })} ETH
             </span>
           )}
           {signMismatchNote && (
@@ -199,14 +205,14 @@ export function MoneyFlowPanel({
           <div className="flow-grid money-flow-cards">
             <InteractiveFlowCard
               direction="in"
-              data={flow.received}
+              data={received}
               displayMode={displayMode}
               active={activeFilter === 'in'}
               onClick={() => toggleFilter('in')}
             />
             <InteractiveFlowCard
               direction="out"
-              data={flow.spent}
+              data={spent}
               displayMode={displayMode}
               active={activeFilter === 'out'}
               onClick={() => toggleFilter('out')}
@@ -264,13 +270,12 @@ export function MoneyFlowPanel({
           </div>
         </div>
 
-        <div className="money-flow-filter-pills" role="tablist" aria-label="Filter activity by direction">
+        <div className="money-flow-filter-pills" role="group" aria-label="Filter activity by direction">
           {FLOW_FILTERS.map((pill) => (
             <button
               key={pill.id}
               type="button"
-              role="tab"
-              aria-selected={activeFilter === pill.id}
+              aria-pressed={activeFilter === pill.id}
               className={activeFilter === pill.id ? 'active' : ''}
               onClick={() => onFilterChange?.(pill.id)}
             >
@@ -358,6 +363,8 @@ export function MoneyFlowPanel({
                   style={{ width: `${incomingShare}%` }}
                   onClick={() => toggleFilter('in')}
                   title={`${flowStats.incomingCount} incoming transfers`}
+                  aria-label="Filter to incoming transfers"
+                  aria-pressed={activeFilter === 'in'}
                 />
                 <button
                   type="button"
@@ -365,6 +372,8 @@ export function MoneyFlowPanel({
                   style={{ width: `${100 - incomingShare}%` }}
                   onClick={() => toggleFilter('out')}
                   title={`${flowStats.outgoingCount} outgoing transfers`}
+                  aria-label="Filter to outgoing transfers"
+                  aria-pressed={activeFilter === 'out'}
                 />
               </div>
             </div>

@@ -55,7 +55,7 @@ const ICONS = {
   warning,
 }
 
-export function MaterialIcon({ icon, fill: _fill, className = '', ...props }) {
+export function MaterialIcon({ icon, fill, className = '', ...props }) {
   const data = ICONS[icon] || ICONS.help
 
   return (

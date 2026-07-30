@@ -183,7 +183,7 @@ export function MoneyFlowTab({ wallet }) {
           </div>
           <div className="flex items-center gap-3 text-sm max-[480px]:text-xs font-medium pt-3 border-t border-gray-100 dark:border-white/10">
             <div className="w-7 h-7 rounded-full bg-teal-400/10 flex items-center justify-center shrink-0">
-              <MaterialIcon icon="stars" fill className="text-teal-400 text-base" />
+              <MaterialIcon icon="stars" className="text-teal-400 text-base" />
             </div>
             <span className="text-slate-900 dark:text-slate-100 font-semibold">Top Performing Asset:</span>
             <span className="text-teal-500 font-bold">{topAsset}</span>

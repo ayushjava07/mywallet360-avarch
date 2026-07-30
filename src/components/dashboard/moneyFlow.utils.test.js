@@ -18,6 +18,16 @@ test('netGrowthValue prefers usd when available', () => {
   assert.equal(result.value, 120)
 })
 
+test('netGrowthValue falls back to eth when usd amounts are incomplete', () => {
+  const result = netGrowthValue({
+    ethNet: 0.05,
+    received: { usdAmount: 200, amount: 0.1 },
+    spent: { amount: 0.05 },
+  })
+  assert.equal(result.isUsd, false)
+  assert.equal(result.value, 0.05)
+})
+
 test('classifyTxDirection detects receive and send', () => {
   assert.equal(classifyTxDirection({ positive: true, displayTitle: 'Receive' }), 'in')
   assert.equal(classifyTxDirection({ positive: false, displayTitle: 'Send', amount: '-1' }), 'out')
