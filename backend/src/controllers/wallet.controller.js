@@ -38,7 +38,15 @@ export const getWalletTransactions = async (req, res, next) => {
   }
 
   const customRange = from && to ? { from, to } : null;
-  const analysisPeriod = customRange ? "custom" : (period || days || "ytd");
+  const requestedPeriod = period || days || "ytd";
+  const analysisPeriod = customRange
+    ? "custom"
+    : (ALLOWED_ANALYSIS_PERIODS.has(requestedPeriod) ? requestedPeriod : Number(requestedPeriod));
+
+  if (!customRange && !ALLOWED_ANALYSIS_PERIODS.has(analysisPeriod) && !ALLOWED_ANALYSIS_DAYS.has(analysisPeriod)) {
+    next(new HttpError(400, "INVALID_ANALYSIS_PERIOD", "Choose YTD or an analysis period of 1, 7, 30, or 365 days."));
+    return;
+  }
 
   try {
     const payload = await getPaginatedWalletTransactions({
