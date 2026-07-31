@@ -5,8 +5,11 @@ import {
   CHART_TYPES,
   DEFAULT_ANALYTICS_RANGE,
   buildRangedChartData,
+  computeNormalRangeBrushIndexes,
   computeSoftYDomain,
+  computeSymlogYDomain,
   createHiddenSeriesState,
+  detectSeriesOutliers,
   formatUsdValue,
   formatYAxisTick,
   getAxisUnitForTab,
@@ -20,8 +23,11 @@ import {
   maybeBucketWeekly,
   normalizeDailyRow,
   padDailyRange,
+  SERIES_COLORS,
   sliceByRange,
   summarizeSeries,
+  symexp,
+  symlog,
   toggleHiddenSeries,
 } from './transactionAnalytics.utils.js'
 
@@ -29,7 +35,7 @@ const NOW = new Date('2026-07-27T12:00:00Z')
 
 test('default analytics range is 1M only', () => {
   assert.equal(DEFAULT_ANALYTICS_RANGE, '1m')
-  assert.deepEqual(ANALYTICS_RANGES.map((r) => r.id), ['1m'])
+  assert.ok(ANALYTICS_RANGES.some((range) => range.id === '1m'))
 })
 
 test('getRangeWindow 1M is ~30 days ending today', () => {
@@ -78,17 +84,20 @@ test('each tab exposes a distinct chart type', () => {
   assert.equal(getChartTypeForTab('tokens'), 'combo')
 })
 
-test('series colors are theme tokens so charts follow light/dark', () => {
+test('series colors use fixed hex palette aligned across legend, stats, and chart', () => {
   const tx = getSeriesForTab('transactions')
   const colors = tx.map((item) => item.color)
-  colors.forEach((color) => assert.match(color, /^var\(--series-/))
+  colors.forEach((color) => assert.match(color, /^#[0-9a-f]{6}$/i))
   assert.equal(new Set(colors).size, 3)
+  assert.equal(tx[0].color, SERIES_COLORS.transactions)
+  assert.equal(tx[1].color, SERIES_COLORS.uniqueOutgoing)
+  assert.equal(tx[2].color, SERIES_COLORS.uniqueIncoming)
 })
 
 test('series definitions match tab requirements', () => {
   const tx = getSeriesForTab('transactions')
   assert.equal(tx.length, 3)
-  assert.equal(tx[0].color, 'var(--series-primary)')
+  assert.equal(tx[0].color, SERIES_COLORS.transactions)
 
   const fees = getSeriesForTab('fees')
   assert.deepEqual(fees.map((item) => item.key), ['ethFeesSpent', 'ethFeesUsed'])
@@ -211,4 +220,40 @@ test('legend toggle state is independent per tab', () => {
 
   const restored = toggleHiddenSeries(afterTx, 'transactions', 'transactionCount')
   assert.equal(isSeriesHidden(restored, 'transactions', 'transactionCount'), false)
+})
+
+test('symlog keeps small and large values on readable scale', () => {
+  assert.equal(symlog(0), 0)
+  assert.ok(symlog(1882) > symlog(20))
+  assert.ok(Math.abs(symexp(symlog(1882)) - 1882) < 0.001)
+})
+
+test('detectSeriesOutliers finds extreme spike days', () => {
+  const rows = [
+    ...Array.from({ length: 20 }, (_, i) => ({
+      date: `2026-01-${String(i + 1).padStart(2, '0')}`,
+      transactionCount: 5,
+    })),
+    { date: '2026-01-21', transactionCount: 1882 },
+  ]
+  const outliers = detectSeriesOutliers(rows, ['transactionCount'])
+  assert.equal(outliers[0].date, '2026-01-21')
+  assert.equal(outliers[0].value, 1882)
+})
+
+test('computeSymlogYDomain spans zero to transformed max', () => {
+  const rows = [{ transactionCount: 2 }, { transactionCount: 1882 }]
+  const scale = computeSymlogYDomain(rows, ['transactionCount'])
+  assert.equal(scale.domain[0], 0)
+  assert.ok(scale.domain[1] > symlog(100))
+})
+
+test('computeNormalRangeBrushIndexes excludes outlier day window', () => {
+  const rows = Array.from({ length: 22 }, (_, i) => ({
+    date: `2026-01-${String(i + 1).padStart(2, '0')}`,
+    transactionCount: i === 20 ? 1882 : 5,
+  }))
+  const outliers = detectSeriesOutliers(rows, ['transactionCount'])
+  const brush = computeNormalRangeBrushIndexes(rows, outliers)
+  assert.ok(brush.endIndex < 20)
 })

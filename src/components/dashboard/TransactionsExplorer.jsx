@@ -91,7 +91,7 @@ export function TransactionsExplorer({
   const [page, setPage] = useState(1)
   const [sort, setSort] = useState('age')
   const [order, setOrder] = useState('desc')
-  const [hideLowValue, setHideLowValue] = useState(false)
+  const [hideLowValue, setHideLowValue] = useState(() => (transactionCount ?? 0) > 1000)
   const [rows, setRows] = useState([])
   const [hasMore, setHasMore] = useState(false)
   const [paginationMode, setPaginationMode] = useState('server')

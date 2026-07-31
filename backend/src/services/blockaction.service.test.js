@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import axios from "axios";
 import {
   buildPublicWalletData,
   buildValuationHistory,
@@ -9,6 +10,8 @@ import {
   buildDailyAnalytics,
   mergeDailyAnalytics,
   buildLastActivityAt,
+  clearWalletServiceCaches,
+  getBlockByTimestamp,
 } from "./blockaction.service.js";
 
 test("builds dated current-price value estimates from wallet flows", () => {
@@ -304,4 +307,24 @@ test("last activity uses newest timestamp across lists", () => {
     [{ timeStamp: "200" }],
   );
   assert.equal(last, new Date(300_000).toISOString());
+});
+
+test("getBlockByTimestamp falls back to estimated block when upstream times out", async () => {
+  const originalGet = axios.get;
+  axios.get = async () => {
+    const error = new Error("timeout of 25000ms exceeded");
+    error.code = "ECONNABORTED";
+    error.isAxiosError = true;
+    throw error;
+  };
+
+  try {
+    clearWalletServiceCaches();
+    process.env.BLOCKACTION_API_URL = process.env.BLOCKACTION_API_URL || "https://api.etherscan.io/v2/api";
+    const block = await getBlockByTimestamp(1_767_225_600, "after");
+    assert.ok(block > 20_000_000);
+  } finally {
+    axios.get = originalGet;
+    clearWalletServiceCaches();
+  }
 });

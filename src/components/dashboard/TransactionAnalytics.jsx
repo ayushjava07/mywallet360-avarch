@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Area,
   AreaChart,
@@ -7,6 +7,7 @@ import {
   CartesianGrid,
   ComposedChart,
   Line,
+  ReferenceDot,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
@@ -16,32 +17,69 @@ import {
 import { MaterialIcon } from '../common/MaterialIcon'
 import {
   ANALYTICS_TABS,
-  DEFAULT_ANALYTICS_RANGE,
-  buildRangedChartData,
-  computeSoftYDomain,
+  ANALYTICS_VIEW_RANGES,
+  DEFAULT_ANALYTICS_VIEW_RANGE,
+  addSymlogFields,
+  buildPeriodChartData,
+  computeNormalRangeBrushIndexes,
+  computeSymlogYDomain,
   createHiddenSeriesState,
+  detectSeriesOutliers,
   formatAnalyticsDate,
   formatAxisTick,
   formatSeriesValue,
   formatUsdValue,
   getAxisUnitForTab,
   getChartTypeForTab,
+  getOutlierBrushMarkers,
   getPrimarySeriesKey,
-  getRangeWindow,
   getSeriesForTab,
   getYearBoundaryDates,
   hasSeriesActivity,
   isSeriesHidden,
-  makeUniqueYTickFormatter,
   maybeBucketWeekly,
+  makeSymlogTickFormatter,
   normalizeDailyRow,
   SERIES_COLORS,
+  sliceViewRange,
   summarizeSeries,
+  symlog,
+  symlogDataKey,
   toggleHiddenSeries,
 } from './transactionAnalytics.utils'
 
-/** Brush needs enough categories to be worth the vertical space it costs. */
 const MIN_POINTS_FOR_BRUSH = 6
+const CHART_ANIMATION_MS = 900
+const CHART_PRIMARY = SERIES_COLORS.transactions
+
+function ChartVerticalCursor({ points, height }) {
+  if (!points?.length) return null
+  const x = points[0].x
+
+  return (
+    <g className="analytics-chart-cursor">
+      <line
+        x1={x}
+        y1={0}
+        x2={x}
+        y2={height}
+        stroke="var(--chart-grid)"
+        strokeWidth={1}
+      />
+      {points.map((point) => (
+        <circle
+          key={`${point.dataKey}-${point.x}-${point.y}`}
+          cx={point.x}
+          cy={point.y}
+          r={4}
+          fill={point.stroke || point.fill || CHART_PRIMARY}
+          stroke="#fff"
+          strokeWidth={2}
+        />
+      ))}
+    </g>
+  )
+}
 
 function useCompactViewport(maxWidth = 700) {
   const [isCompact, setIsCompact] = useState(() => (
@@ -64,10 +102,6 @@ function AnalyticsTooltip({
   payload,
   label,
   series,
-  softMax,
-  clipped,
-  coordinate,
-  viewBox,
   hiddenKeys = [],
 }) {
   if (!active || !payload?.length) return null
@@ -78,32 +112,20 @@ function AnalyticsTooltip({
   const visibleSeries = series.filter((item) => !hiddenKeys.includes(item.key))
   if (!visibleSeries.length) return null
 
-  const chartLeft = viewBox?.x ?? 0
-  const chartWidth = viewBox?.width ?? 0
-  const cursorX = coordinate?.x ?? chartLeft
-  const placeLeft = chartWidth > 0 && cursorX > chartLeft + chartWidth * 0.55
-  const allZero = visibleSeries.every((item) => !(Number(point[item.key]) || 0))
-
   return (
-    <div className={`chart-tooltip-modern analytics-tooltip ${placeLeft ? 'analytics-tooltip--left' : ''}`}>
-      <span className="chart-tooltip-date">
+    <div className="analytics-tooltip analytics-tooltip--point">
+      <span className="analytics-tooltip__date">
         {formatAnalyticsDate(label || point.date, { year: 'numeric' })}
       </span>
-      {allZero ? (
-        <div className="analytics-tooltip__quiet">No activity on this day</div>
-      ) : visibleSeries.map((item) => {
+      {visibleSeries.map((item) => {
         const raw = Number(point[item.key]) || 0
-        const exceeds = clipped && softMax > 0 && raw > softMax
         return (
           <div key={item.key} className="analytics-tooltip__row">
             <span className="analytics-tooltip__label">
               <i style={{ background: item.color }} />
               {item.label}
             </span>
-            <strong>
-              {formatSeriesValue(item.key, raw)}
-              {exceeds ? ' · above scale' : ''}
-            </strong>
+            <strong>{formatSeriesValue(item.key, raw)}</strong>
           </div>
         )
       })}
@@ -182,31 +204,67 @@ function BrushTraveller(props) {
 
   return (
     <g className="analytics-brush-traveller">
-      <rect
-        x={cx - 8}
-        y={y}
-        width={16}
-        height={height}
-        fill="transparent"
-        style={{ cursor: 'ew-resize' }}
-      />
-      <rect
-        x={cx - 1}
-        y={barY}
-        width={2}
-        height={barHeight}
-        rx={1}
-        fill="var(--series-primary)"
-      />
-      <circle
-        cx={cx}
-        cy={y + height / 2}
-        r={3.5}
-        fill="var(--series-primary)"
-        stroke="var(--card)"
-        strokeWidth={1.5}
-      />
+      <rect x={cx - 8} y={y} width={16} height={height} fill="transparent" style={{ cursor: 'ew-resize' }} />
+      <rect x={cx - 1} y={barY} width={2} height={barHeight} rx={1} fill={CHART_PRIMARY} />
+      <circle cx={cx} cy={y + height / 2} r={3.5} fill={CHART_PRIMARY} stroke="#fff" strokeWidth={1.5} />
     </g>
+  )
+}
+
+function ViewRangeMenu({ viewRangeId, onChange }) {
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef(null)
+  const active = ANALYTICS_VIEW_RANGES.find((item) => item.id === viewRangeId)
+    || ANALYTICS_VIEW_RANGES.find((item) => item.id === DEFAULT_ANALYTICS_VIEW_RANGE)
+
+  useEffect(() => {
+    if (!open) return undefined
+    const close = (event) => {
+      if (!rootRef.current?.contains(event.target)) setOpen(false)
+    }
+    document.addEventListener('pointerdown', close)
+    return () => document.removeEventListener('pointerdown', close)
+  }, [open])
+
+  return (
+    <div className={`dashboard-bar-custom-wrap analytics-view-range${open ? ' analytics-view-range--open' : ''}`} ref={rootRef}>
+      <button
+        type="button"
+        className={`dashboard-bar-pill dashboard-bar-pill--custom dashboard-bar-pill--active${open ? '' : ''}`}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        {active?.label || 'YTD'}
+        <MaterialIcon
+          icon="expand_more"
+          className={`dashboard-bar-chevron text-base!${open ? ' dashboard-bar-chevron--open' : ''}`}
+        />
+      </button>
+      {open && (
+        <div className="dashboard-bar-dropdown analytics-view-range__menu" role="listbox">
+          {ANALYTICS_VIEW_RANGES.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              role="option"
+              aria-selected={item.id === viewRangeId}
+              className={`dashboard-bar-dropdown-item${item.id === viewRangeId ? ' dashboard-bar-dropdown-item--active' : ''}`}
+              onClick={() => {
+                onChange(item.id)
+                setOpen(false)
+              }}
+            >
+              <span className="dashboard-bar-dropdown-short">{item.label}</span>
+              <div>
+                <strong>{item.label}</strong>
+                <small>Chart window</small>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -227,22 +285,31 @@ function renderSeries({
 }) {
   return series.map((item) => {
     const hidden = isSeriesHidden(hiddenByTab, tabId, item.key)
+    const dataKey = symlogDataKey(item.key)
     const strokeWidth = item.key === primaryKey ? (isPhone ? 2 : 2.25) : (isPhone ? 1.5 : 2)
-    const activeDot = { r: isPhone ? 3 : 4, strokeWidth: 2, stroke: 'var(--card)', fill: item.color }
+    const activeDot = { r: isPhone ? 4 : 5, strokeWidth: 2, stroke: '#fff', fill: item.color }
+    const seriesDot = {
+      r: isPhone ? 2.5 : 3,
+      strokeWidth: 1.5,
+      stroke: '#fff',
+      fill: item.color,
+    }
     const isBar = chartType === 'bar' || (chartType === 'combo' && item.chartType !== 'line')
 
     if (isBar) {
       return (
         <Bar
           key={item.key}
-          dataKey={item.key}
+          dataKey={dataKey}
           name={item.label}
           fill={`url(#analyticsBar-${item.key})`}
           radius={[4, 4, 0, 0]}
           maxBarSize={maxBarSize}
           hide={hidden}
           yAxisId={item.yAxisId || 'left'}
-          isAnimationActive={false}
+          isAnimationActive
+          animationDuration={CHART_ANIMATION_MS}
+          animationEasing="ease-out"
           legendType="none"
         />
       )
@@ -252,16 +319,19 @@ function renderSeries({
       return (
         <Area
           key={item.key}
-          type="monotone"
-          dataKey={item.key}
+          type="linear"
+          dataKey={dataKey}
           name={item.label}
           stroke={item.color}
           strokeWidth={strokeWidth}
           fill={`url(#analyticsFill-${item.key})`}
           hide={hidden}
           yAxisId={item.yAxisId || 'left'}
-          isAnimationActive={false}
+          isAnimationActive
+          animationDuration={CHART_ANIMATION_MS}
+          animationEasing="ease-out"
           legendType="none"
+          dot={seriesDot}
           activeDot={activeDot}
         />
       )
@@ -270,16 +340,18 @@ function renderSeries({
     return (
       <Line
         key={item.key}
-        type="monotone"
-        dataKey={item.key}
+        type="linear"
+        dataKey={dataKey}
         name={item.label}
         stroke={item.color}
         strokeWidth={strokeWidth}
-        dot={false}
+        dot={seriesDot}
         activeDot={activeDot}
         hide={hidden}
         yAxisId={item.yAxisId || (chartType === 'combo' ? 'right' : 'left')}
-        isAnimationActive={false}
+        isAnimationActive
+        animationDuration={CHART_ANIMATION_MS}
+        animationEasing="ease-out"
         legendType="none"
       />
     )
@@ -291,21 +363,25 @@ export function TransactionAnalytics({
   addressLabel,
   sourceLabel = 'MyWallet360',
   ethPrice = null,
+  periodLabel = 'Selected period',
+  reportRange = null,
 }) {
-  const rangeId = DEFAULT_ANALYTICS_RANGE
   const isCompact = useCompactViewport(700)
   const isPhone = useCompactViewport(480)
   const [tabId, setTabId] = useState('transactions')
+  const [viewRangeId, setViewRangeId] = useState(DEFAULT_ANALYTICS_VIEW_RANGE)
   const [brushIndexes, setBrushIndexes] = useState({ startIndex: 0, endIndex: 0 })
   const [hiddenByTab, setHiddenByTab] = useState(createHiddenSeriesState)
+  const [outlierChipDismissed, setOutlierChipDismissed] = useState(false)
 
   const series = useMemo(() => getSeriesForTab(tabId), [tabId])
+  const seriesKeys = useMemo(() => series.map((item) => item.key), [series])
   const chartType = useMemo(() => getChartTypeForTab(tabId), [tabId])
   const activeTab = ANALYTICS_TABS.find((tab) => tab.id === tabId) || ANALYTICS_TABS[0]
   const primaryKey = getPrimarySeriesKey(tabId)
   const primaryColor = series[0]?.color || SERIES_COLORS.transactions
-  const yTickFormatter = useMemo(() => makeUniqueYTickFormatter(tabId), [tabId])
-  const rightTickFormatter = useMemo(() => makeUniqueYTickFormatter('tokens'), [])
+  const leftTickFormatter = useMemo(() => makeSymlogTickFormatter(tabId), [tabId])
+  const rightTickFormatter = useMemo(() => makeSymlogTickFormatter('tokens'), [tabId])
   const hiddenKeys = hiddenByTab[tabId] || []
 
   const visibleSeries = useMemo(
@@ -314,16 +390,34 @@ export function TransactionAnalytics({
   )
 
   const { data: chartData, bucketed } = useMemo(() => {
-    const normalized = [...(dailyAnalytics || [])]
-      .map(normalizeDailyRow)
-      .sort((a, b) => (a.date < b.date ? -1 : 1))
-    const ranged = buildRangedChartData(normalized, rangeId)
-    const bucketedResult = maybeBucketWeekly(ranged)
+    const ranged = buildPeriodChartData(dailyAnalytics, reportRange)
+    const viewed = sliceViewRange(ranged, viewRangeId, reportRange)
+    const bucketedResult = maybeBucketWeekly(viewed)
+    const normalized = bucketedResult.data.map(normalizeDailyRow)
     return {
-      data: bucketedResult.data.map(normalizeDailyRow),
+      data: addSymlogFields(normalized, seriesKeys),
       bucketed: bucketedResult.bucketed,
     }
-  }, [dailyAnalytics, rangeId])
+  }, [dailyAnalytics, reportRange, viewRangeId, seriesKeys])
+
+  const outliers = useMemo(
+    () => detectSeriesOutliers(chartData, seriesKeys),
+    [chartData, seriesKeys],
+  )
+
+  const primaryOutlier = useMemo(
+    () => outliers.find((item) => item.key === primaryKey) || outliers[0] || null,
+    [outliers, primaryKey],
+  )
+
+  const outlierMarkers = useMemo(
+    () => getOutlierBrushMarkers(chartData, outliers, primaryKey),
+    [chartData, outliers, primaryKey],
+  )
+
+  useEffect(() => {
+    setOutlierChipDismissed(false)
+  }, [chartData, tabId, viewRangeId])
 
   useEffect(() => {
     if (!chartData.length) {
@@ -331,7 +425,7 @@ export function TransactionAnalytics({
       return
     }
     setBrushIndexes({ startIndex: 0, endIndex: chartData.length - 1 })
-  }, [chartData, tabId])
+  }, [chartData, tabId, viewRangeId])
 
   const visibleRows = useMemo(() => {
     if (!chartData.length) return []
@@ -340,7 +434,6 @@ export function TransactionAnalytics({
     return chartData.slice(start, end + 1)
   }, [brushIndexes, chartData])
 
-  // Every series keeps a chip so toggling never reflows the row; hidden ones dim.
   const summary = useMemo(
     () => summarizeSeries(visibleRows, series),
     [visibleRows, series],
@@ -352,26 +445,28 @@ export function TransactionAnalytics({
   )
   const spansMultipleYears = yearBoundaries.length > 0
 
-  const yScale = useMemo(() => {
+  const leftVisibleKeys = useMemo(() => {
     const leftVisible = visibleSeries.filter((item) => item.yAxisId !== 'right').map((item) => item.key)
-    const leftKeys = leftVisible.length
+    return leftVisible.length
       ? leftVisible
       : series.filter((item) => item.yAxisId !== 'right').map((item) => item.key)
-    return computeSoftYDomain(visibleRows, leftKeys)
-  }, [visibleRows, visibleSeries, series])
+  }, [visibleSeries, series])
 
-  /**
-   * The right axis must stay mounted while any series still points at it,
-   * otherwise recharts resolves a missing axis for that series. Scale it to the
-   * visible right-hand series, falling back to all of them when they're hidden.
-   */
-  const rightYScale = useMemo(() => {
+  const rightVisibleKeys = useMemo(() => {
     const rightSeries = series.filter((item) => item.yAxisId === 'right')
-    if (!rightSeries.length) return null
     const shown = rightSeries.filter((item) => !hiddenKeys.includes(item.key))
-    const keys = (shown.length ? shown : rightSeries).map((item) => item.key)
-    return computeSoftYDomain(visibleRows, keys)
-  }, [visibleRows, series, hiddenKeys])
+    return (shown.length ? shown : rightSeries).map((item) => item.key)
+  }, [series, hiddenKeys])
+
+  const leftYScale = useMemo(
+    () => computeSymlogYDomain(visibleRows, leftVisibleKeys),
+    [visibleRows, leftVisibleKeys],
+  )
+
+  const rightYScale = useMemo(() => {
+    if (!rightVisibleKeys.length) return null
+    return computeSymlogYDomain(visibleRows, rightVisibleKeys)
+  }, [visibleRows, rightVisibleKeys])
 
   const hasActivity = useMemo(
     () => hasSeriesActivity(visibleRows, visibleSeries),
@@ -381,6 +476,12 @@ export function TransactionAnalytics({
   const handleLegendToggle = useCallback((seriesKey) => {
     setHiddenByTab((current) => toggleHiddenSeries(current, tabId, seriesKey))
   }, [tabId])
+
+  const zoomToNormalRange = useCallback(() => {
+    const next = computeNormalRangeBrushIndexes(chartData, outliers)
+    setBrushIndexes(next)
+    setOutlierChipDismissed(true)
+  }, [chartData, outliers])
 
   const brushStartLabel = visibleRows[0]
     ? formatAnalyticsDate(visibleRows[0].date, { year: 'numeric' })
@@ -392,53 +493,53 @@ export function TransactionAnalytics({
   if (!dailyAnalytics?.length || !chartData.length) return null
 
   const titleAddress = isCompact ? compactAddress(addressLabel) : (addressLabel || 'wallet')
-  const rangeWindow = getRangeWindow(rangeId)
+  const rangeWindow = reportRange?.from && reportRange?.to
+    ? { start: reportRange.from, end: reportRange.to }
+    : null
   const isDualAxis = chartType === 'combo' && Boolean(rightYScale)
   const usesBars = chartType === 'bar' || chartType === 'combo'
   const showBrush = chartData.length > MIN_POINTS_FOR_BRUSH && Boolean(primaryKey)
+  const showOutlierChip = Boolean(primaryOutlier) && !outlierChipDismissed
 
   const axisWidth = isPhone ? 36 : isCompact ? 42 : 52
   const maxBarSize = isPhone ? 9 : isCompact ? 13 : 18
   const chartMargin = {
-    top: isPhone ? 8 : 12,
+    top: isPhone ? 10 : 14,
     right: isDualAxis ? 0 : (isPhone ? 8 : 14),
     bottom: 0,
     left: 0,
   }
 
   const leftAxisLabel = getAxisUnitForTab(tabId)
-  const leftTickColor = isDualAxis ? primaryColor : 'var(--muted)'
   const showGenericSummary = tabId !== 'fees' && summary.length > 0
   const allSeriesHidden = visibleSeries.length === 0
+  const primaryLogKey = symlogDataKey(primaryKey)
 
   return (
-    <section className="card analytics-card p-5 max-[480px]:p-3.5">
+    <section className="analytics-card analytics-card--glass card relative isolate overflow-visible p-[22px] max-[480px]:p-4">
+      <div className="analytics-card__mesh" aria-hidden="true" />
       <div className="analytics-header">
-        <div className="flex items-center gap-2.5 min-w-0">
-          <MaterialIcon icon="monitoring" className="text-teal-400 text-xl shrink-0" />
+        <div className="flex items-start gap-3 min-w-0">
+          <MaterialIcon icon="monitoring" className="text-teal-400 text-xl shrink-0 mt-0.5" />
           <div className="min-w-0">
             <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-[0.2em]">
               Transaction Analytics
             </span>
-            <h2 className="text-base font-bold mt-0.5 truncate">
+            <h2 className="text-base font-bold mt-0.5 text-[#1a1f36] dark:text-slate-100">
               {activeTab.title}{isPhone ? '' : ` for ${titleAddress}`}
             </h2>
             <p className="analytics-source">
               {isPhone ? (
                 <>
                   {titleAddress}
-                  {rangeWindow && (
-                    <>
-                      {' · '}
-                      {formatAnalyticsDate(rangeWindow.start, { month: 'short', day: 'numeric' })}
-                      {'–'}
-                      {formatAnalyticsDate(rangeWindow.end, { month: 'short', day: 'numeric' })}
-                    </>
-                  )}
+                  {' · '}
+                  Daily activity · {periodLabel}
                 </>
               ) : (
                 <>
                   Source: {sourceLabel}
+                  {' · '}
+                  Daily activity · {periodLabel}
                   {rangeWindow && (
                     <>
                       {' · '}
@@ -452,19 +553,18 @@ export function TransactionAnalytics({
             </p>
           </div>
         </div>
-
-        <span className="analytics-range-label" aria-label="Chart range">1M</span>
+        <ViewRangeMenu viewRangeId={viewRangeId} onChange={setViewRangeId} />
       </div>
 
       <div className="analytics-tabs-wrap">
-        <div className="analytics-tabs" role="tablist" aria-label="Analytics metric">
+        <div className="dashboard-bar-periods" role="tablist" aria-label="Analytics metric">
           {ANALYTICS_TABS.map((tab) => (
             <button
               key={tab.id}
               type="button"
               role="tab"
               aria-selected={tabId === tab.id}
-              className={`analytics-tab ${tabId === tab.id ? 'analytics-tab--active' : ''}`}
+              className={`dashboard-bar-pill${tabId === tab.id ? ' dashboard-bar-pill--active' : ''}`}
               onClick={() => setTabId(tab.id)}
             >
               {isPhone ? tab.label.replace(' Transfers', '') : tab.label}
@@ -500,21 +600,25 @@ export function TransactionAnalytics({
         </div>
       )}
 
-      {(bucketed || yScale.clipped) && !isPhone && (
-        <p className="analytics-bucket-note">
-          {bucketed && 'Weekly totals for long history. '}
-          {yScale.clipped && (
-            <>
-              Y-axis soft-scaled so spikes do not flatten the chart
-              {yScale.trueMax > 0 ? ` (peak ${formatSeriesValue(primaryKey, yScale.trueMax)}).` : '.'}
-              {' '}Drag the brush to zoom into quieter periods.
-            </>
-          )}
-        </p>
+      {showOutlierChip && (
+        <button
+          type="button"
+          className="analytics-outlier-chip"
+          onClick={zoomToNormalRange}
+        >
+          <span aria-hidden="true">📈</span>
+          Outlier detected on {formatAnalyticsDate(primaryOutlier.date, { month: 'short', day: 'numeric' })}
+          {' '}
+          ({formatSeriesValue(primaryOutlier.key, primaryOutlier.value)}) — click to zoom into normal range
+        </button>
+      )}
+
+      {bucketed && !isPhone && (
+        <p className="analytics-bucket-note">Weekly totals shown for long history.</p>
       )}
 
       <div
-        key={tabId}
+        key={`${tabId}-${viewRangeId}`}
         className={`analytics-chart-area${showBrush ? '' : ' analytics-chart-area--no-brush'}`}
         role="img"
         aria-label={`${activeTab.title} chart showing ${visibleSeries.map((item) => item.label).join(', ') || 'no series'}`}
@@ -524,22 +628,23 @@ export function TransactionAnalytics({
             <defs>
               {series.map((item) => (
                 <linearGradient key={`fill-${item.key}`} id={`analyticsFill-${item.key}`} x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={item.color} stopOpacity={0.3} />
-                  <stop offset="100%" stopColor={item.color} stopOpacity={0.02} />
+                  <stop offset="0%" stopColor={item.color} stopOpacity={0.18} />
+                  <stop offset="85%" stopColor={item.color} stopOpacity={0.04} />
+                  <stop offset="100%" stopColor={item.color} stopOpacity={0} />
                 </linearGradient>
               ))}
               {series.map((item) => (
                 <linearGradient key={`bar-${item.key}`} id={`analyticsBar-${item.key}`} x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={item.color} stopOpacity={0.95} />
-                  <stop offset="100%" stopColor={item.color} stopOpacity={0.62} />
+                  <stop offset="0%" stopColor={item.color} stopOpacity={0.85} />
+                  <stop offset="100%" stopColor={item.color} stopOpacity={0.45} />
                 </linearGradient>
               ))}
               <linearGradient id="analyticsBrushFill" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor={primaryColor} stopOpacity={0.22} />
-                <stop offset="100%" stopColor={primaryColor} stopOpacity={0.04} />
+                <stop offset="0%" stopColor={CHART_PRIMARY} stopOpacity={0.22} />
+                <stop offset="100%" stopColor={CHART_PRIMARY} stopOpacity={0} />
               </linearGradient>
             </defs>
-            <CartesianGrid strokeDasharray="2 5" stroke="var(--chart-grid)" vertical={false} />
+            <CartesianGrid strokeDasharray="3 4" stroke="var(--chart-grid)" vertical={false} />
             <XAxis
               dataKey="date"
               tick={{ fontSize: isPhone ? 8 : 9, fill: 'var(--muted)' }}
@@ -552,13 +657,14 @@ export function TransactionAnalytics({
             />
             <YAxis
               yAxisId="left"
-              tick={{ fontSize: isPhone ? 8 : 9, fill: leftTickColor }}
+              tick={{ fontSize: isPhone ? 8 : 9, fill: primaryColor }}
               tickLine={false}
               axisLine={false}
               width={axisWidth}
-              domain={yScale.domain}
+              domain={leftYScale.domain}
+              ticks={leftYScale.tickValues}
               allowDataOverflow={false}
-              tickFormatter={yTickFormatter}
+              tickFormatter={leftTickFormatter}
               label={isCompact ? undefined : {
                 value: leftAxisLabel,
                 angle: -90,
@@ -575,6 +681,7 @@ export function TransactionAnalytics({
                 axisLine={false}
                 width={axisWidth}
                 domain={rightYScale.domain}
+                ticks={rightYScale.tickValues}
                 allowDataOverflow={false}
                 tickFormatter={rightTickFormatter}
                 label={isCompact ? undefined : {
@@ -590,7 +697,7 @@ export function TransactionAnalytics({
                 key={`year-${boundary.year}`}
                 yAxisId="left"
                 x={boundary.date}
-                stroke="var(--line)"
+                stroke="var(--chart-grid)"
                 strokeDasharray="4 4"
                 label={{
                   value: String(boundary.year),
@@ -601,20 +708,36 @@ export function TransactionAnalytics({
                 }}
               />
             ))}
+            {primaryOutlier && (
+              <ReferenceDot
+                yAxisId="left"
+                x={primaryOutlier.date}
+                y={symlog(primaryOutlier.value)}
+                r={4}
+                fill="#fb7185"
+                stroke="#fff"
+                strokeWidth={1.5}
+                label={{
+                  value: formatSeriesValue(primaryOutlier.key, primaryOutlier.value),
+                  position: 'top',
+                  fill: '#fb7185',
+                  fontSize: 10,
+                  fontFamily: 'JetBrains Mono, monospace',
+                }}
+              />
+            )}
             <Tooltip
-              allowEscapeViewBox={{ x: true, y: true }}
-              wrapperStyle={{ zIndex: 20, outline: 'none' }}
+              offset={16}
+              wrapperStyle={{ zIndex: 20, outline: 'none', pointerEvents: 'none' }}
               content={(
                 <AnalyticsTooltip
                   series={series}
                   hiddenKeys={hiddenKeys}
-                  softMax={yScale.softMax}
-                  clipped={yScale.clipped}
                 />
               )}
               cursor={usesBars
                 ? { fill: 'var(--chart-cursor)', radius: 4 }
-                : { stroke: 'var(--muted)', strokeDasharray: '3 3', opacity: 0.4 }}
+                : <ChartVerticalCursor />}
             />
             {renderSeries({
               chartType,
@@ -628,7 +751,7 @@ export function TransactionAnalytics({
             {showBrush && (
               <Brush
                 dataKey="date"
-                height={isPhone ? 26 : 34}
+                height={isPhone ? 28 : 36}
                 stroke="transparent"
                 fill="var(--chart-cursor)"
                 travellerWidth={isPhone ? 14 : 12}
@@ -645,16 +768,28 @@ export function TransactionAnalytics({
                 }}
               >
                 <AreaChart>
+                  <YAxis hide domain={[0, leftYScale.domain[1] || 1]} />
                   <Area
-                    type="monotone"
-                    dataKey={primaryKey}
-                    stroke={primaryColor}
+                    type="linear"
+                    dataKey={primaryLogKey}
+                    stroke={CHART_PRIMARY}
                     fill="url(#analyticsBrushFill)"
                     strokeWidth={1}
-                    strokeOpacity={0.65}
+                    strokeOpacity={0.75}
                     isAnimationActive={false}
                     dot={false}
                   />
+                  {outlierMarkers.map((marker) => (
+                    <ReferenceDot
+                      key={`brush-outlier-${marker.date}`}
+                      x={marker.date}
+                      y={marker.markerY}
+                      r={3}
+                      fill="#fb7185"
+                      stroke="#fff"
+                      strokeWidth={1}
+                    />
+                  ))}
                 </AreaChart>
               </Brush>
             )}

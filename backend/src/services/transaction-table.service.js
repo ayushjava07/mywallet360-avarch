@@ -1,4 +1,5 @@
-import { blockActionRequest } from "./blockaction.service.js";
+import { blockActionRequest, getBlockByTimestamp } from "./blockaction.service.js";
+import { LATEST_BLOCK, shouldUseLatestBlock } from "../utils/block-by-time.js";
 import { fromWei, round, tokenAmount } from "../utils/calculations.js";
 import {
   getMethodDisplayLabel,
@@ -11,6 +12,13 @@ const DUST_ETH = 0.0001;
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 50;
 const MAX_FILL_PAGES = 4;
+const PREVIEW_FILL_PAGES = 6;
+const PREVIEW_UPSTREAM_BATCH = 100;
+const TX_TABLE_CACHE_TTL_MS = 45_000;
+const PERIOD_WINDOW_CACHE_TTL_MS = 5 * 60_000;
+
+const txTableCache = new Map();
+const periodWindowCache = new Map();
 
 const ACTION_BY_TYPE = {
   normal: "txlist",
@@ -33,27 +41,15 @@ async function resolvePeriodWindow(analysisPeriod, customRange = null) {
     const start = new Date(`${customRange.from}T00:00:00.000Z`);
     const requestedEnd = new Date(`${customRange.to}T23:59:59.999Z`);
     const includesCurrentDay = requestedEnd.getTime() >= Date.now();
-    const [startBlock, endBlock] = await Promise.all([
-      blockActionRequest({
-        module: "block",
-        action: "getblocknobytime",
-        timestamp: Math.floor(start.getTime() / 1000),
-        closest: "after",
-      }),
-      includesCurrentDay
-        ? Promise.resolve(99_999_999)
-        : blockActionRequest({
-          module: "block",
-          action: "getblocknobytime",
-          timestamp: Math.floor(requestedEnd.getTime() / 1000),
-          closest: "before",
-        }),
-    ]);
+    const startBlock = await getBlockByTimestamp(Math.floor(start.getTime() / 1000), "after");
+    const endBlock = includesCurrentDay || shouldUseLatestBlock(requestedEnd)
+      ? LATEST_BLOCK
+      : await getBlockByTimestamp(Math.floor(requestedEnd.getTime() / 1000), "before");
 
     return {
       id: `custom:${customRange.from}:${customRange.to}`,
-      startBlock: Number(startBlock),
-      endBlock: Number(endBlock),
+      startBlock,
+      endBlock,
     };
   }
 
@@ -63,25 +59,15 @@ async function resolvePeriodWindow(analysisPeriod, customRange = null) {
     ? new Date(Date.UTC(end.getUTCFullYear(), 0, 1))
     : new Date(end.getTime() - normalizedPeriod * 86_400_000);
 
-  const [startBlock, endBlock] = await Promise.all([
-    blockActionRequest({
-      module: "block",
-      action: "getblocknobytime",
-      timestamp: Math.floor(start.getTime() / 1000),
-      closest: "after",
-    }),
-    blockActionRequest({
-      module: "block",
-      action: "getblocknobytime",
-      timestamp: Math.floor(end.getTime() / 1000),
-      closest: "before",
-    }),
-  ]);
+  const startBlock = await getBlockByTimestamp(Math.floor(start.getTime() / 1000), "after");
+  const endBlock = shouldUseLatestBlock(end)
+    ? LATEST_BLOCK
+    : await getBlockByTimestamp(Math.floor(end.getTime() / 1000), "before");
 
   return {
     id: normalizedPeriod === "ytd" ? "ytd" : `${normalizedPeriod}d`,
-    startBlock: Number(startBlock),
-    endBlock: Number(endBlock),
+    startBlock,
+    endBlock,
   };
 }
 
@@ -178,6 +164,66 @@ function passesLowValueFilter(row, hideLowValue) {
   return Number(row.amountEth) >= DUST_ETH;
 }
 
+function resolveFillConfig(hideLowValue, safeLimit) {
+  if (!hideLowValue) {
+    return { maxFillPages: MAX_FILL_PAGES, upstreamBatchSize: safeLimit };
+  }
+
+  const isPreview = safeLimit <= 10;
+  return {
+    maxFillPages: isPreview ? PREVIEW_FILL_PAGES : Math.min(10, MAX_FILL_PAGES + 2),
+    upstreamBatchSize: Math.max(safeLimit, PREVIEW_UPSTREAM_BATCH),
+  };
+}
+
+function buildTxCacheKey({
+  address,
+  type,
+  page,
+  limit,
+  analysisPeriod,
+  customRange,
+  sort,
+  order,
+  hideLowValue,
+}) {
+  const rangeKey = customRange?.from && customRange?.to
+    ? `${customRange.from}:${customRange.to}`
+    : String(analysisPeriod);
+  return [
+    address,
+    type,
+    page,
+    limit,
+    rangeKey,
+    sort,
+    order,
+    hideLowValue ? '1' : '0',
+  ].join(':');
+}
+
+async function getCachedPeriodWindow(analysisPeriod, customRange) {
+  const cacheKey = customRange?.from && customRange?.to
+    ? `custom:${customRange.from}:${customRange.to}`
+    : String(analysisPeriod);
+  const cached = periodWindowCache.get(cacheKey);
+  if (cached?.expiresAt > Date.now()) {
+    return cached.value;
+  }
+
+  const value = await resolvePeriodWindow(analysisPeriod, customRange);
+  periodWindowCache.set(cacheKey, {
+    value,
+    expiresAt: Date.now() + PERIOD_WINDOW_CACHE_TTL_MS,
+  });
+  return value;
+}
+
+export function clearTransactionTableCaches() {
+  txTableCache.clear();
+  periodWindowCache.clear();
+}
+
 function sortRows(rows, sort, order) {
   const direction = order === "asc" ? 1 : -1;
 
@@ -228,6 +274,7 @@ export async function getPaginatedWalletTransactions({
   const safePage = Math.max(Number(page) || 1, 1);
   const safeSort = sort === "amount" ? "amount" : "age";
   const safeOrder = order === "asc" ? "asc" : "desc";
+  const hideLowValueFlag = Boolean(hideLowValue);
 
   if (customRange?.from && customRange?.to) {
     // custom ranges are always allowed when both dates are present
@@ -239,7 +286,24 @@ export async function getPaginatedWalletTransactions({
     }
   }
 
-  const periodWindow = await resolvePeriodWindow(analysisPeriod, customRange);
+  const cacheKey = buildTxCacheKey({
+    address: normalizedAddress,
+    type: normalizedType,
+    page: safePage,
+    limit: safeLimit,
+    analysisPeriod,
+    customRange,
+    sort: safeSort,
+    order: safeOrder,
+    hideLowValue: hideLowValueFlag,
+  });
+  const cached = txTableCache.get(cacheKey);
+  if (cached?.expiresAt > Date.now()) {
+    return cached.value;
+  }
+
+  const periodWindow = await getCachedPeriodWindow(analysisPeriod, customRange);
+  const { maxFillPages, upstreamBatchSize } = resolveFillConfig(hideLowValue, safeLimit);
 
   let rows = [];
   let upstreamPage = safePage;
@@ -248,12 +312,12 @@ export async function getPaginatedWalletTransactions({
   const paginationMode = safeSort === "amount" ? "window" : "server";
 
   if (safeSort === "amount") {
-    while (rows.length < safeLimit && fillAttempts < MAX_FILL_PAGES) {
+    while (rows.length < safeLimit && fillAttempts < maxFillPages) {
       const batch = await fetchBlockActionPage(
         normalizedType,
         normalizedAddress,
         upstreamPage,
-        safeLimit,
+        upstreamBatchSize,
         periodWindow,
         "desc",
       );
@@ -268,7 +332,7 @@ export async function getPaginatedWalletTransactions({
       upstreamPage += 1;
       fillAttempts += 1;
 
-      if (batch.length < safeLimit) {
+      if (batch.length < upstreamBatchSize) {
         hasMore = false;
         break;
       }
@@ -278,12 +342,12 @@ export async function getPaginatedWalletTransactions({
 
     rows = sortRows(rows, "amount", safeOrder).slice(0, safeLimit);
   } else {
-    while (rows.length < safeLimit && fillAttempts < MAX_FILL_PAGES) {
+    while (rows.length < safeLimit && fillAttempts < maxFillPages) {
       const batch = await fetchBlockActionPage(
         normalizedType,
         normalizedAddress,
         upstreamPage,
-        safeLimit,
+        upstreamBatchSize,
         periodWindow,
         safeOrder,
       );
@@ -295,11 +359,11 @@ export async function getPaginatedWalletTransactions({
         .filter((row) => passesLowValueFilter(row, hideLowValue));
 
       rows.push(...mapped);
-      hasMore = batch.length >= safeLimit;
+      hasMore = batch.length >= upstreamBatchSize;
       upstreamPage += 1;
       fillAttempts += 1;
 
-      if (batch.length < safeLimit) {
+      if (batch.length < upstreamBatchSize) {
         hasMore = false;
         break;
       }
@@ -308,21 +372,28 @@ export async function getPaginatedWalletTransactions({
     rows = rows.slice(0, safeLimit);
   }
 
-  return {
+  const payload = {
     type: normalizedType,
     page: safePage,
     limit: safeLimit,
     sort: safeSort,
     order: safeOrder,
-    hideLowValue: Boolean(hideLowValue),
+    hideLowValue: hideLowValueFlag,
     period: periodWindow,
     rows,
     hasMore: paginationMode === "window" ? hasMore : (hasMore || rows.length >= safeLimit),
     paginationMode,
   };
+
+  txTableCache.set(cacheKey, {
+    value: payload,
+    expiresAt: Date.now() + TX_TABLE_CACHE_TTL_MS,
+  });
+
+  return payload;
 }
 
-export { normalizePeriod };
+export { normalizePeriod, resolveFillConfig };
 
 export const TRANSACTION_TABLE_CONSTANTS = {
   DEFAULT_LIMIT,

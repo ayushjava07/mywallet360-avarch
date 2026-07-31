@@ -22,6 +22,11 @@ import {
   round,
   tokenAmount,
 } from "../utils/calculations.js";
+import {
+  LATEST_BLOCK,
+  estimateBlockNumber,
+  shouldUseLatestBlock,
+} from "../utils/block-by-time.js";
 
 const BLOCKACTION_URL = process.env.BLOCKACTION_API_URL;
 const DEFILLAMA_PRICES_URL = "https://coins.llama.fi/prices/current";
@@ -299,10 +304,13 @@ export function getPortfolioInventory(address) {
   return inventorySnapshot(pending);
 }
 
-export async function blockActionRequest(params) {
+export async function blockActionRequest(params, options = {}) {
   if (!BLOCKACTION_URL) {
     throw new Error("BLOCKACTION_API_URL is not configured");
   }
+
+  const timeout = options.timeout ?? 15_000;
+  const maxAttempts = options.maxAttempts ?? 3;
 
   const requestParams = {
     chainid: CHAIN_ID,
@@ -318,11 +326,11 @@ export async function blockActionRequest(params) {
   return scheduleRequest(async () => {
     let lastError;
 
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       try {
         const response = await axios.get(BLOCKACTION_URL, {
           params: requestParams,
-          timeout: 15_000,
+          timeout,
         });
 
         if (response.data?.status === "0") {
@@ -332,7 +340,7 @@ export async function blockActionRequest(params) {
             return setCached(cacheKey, []);
           }
 
-          if (errorMessage.includes("rate limit") && attempt < 2) {
+          if (errorMessage.includes("rate limit") && attempt < maxAttempts - 1) {
             await wait(750 * (attempt + 1));
             continue;
           }
@@ -344,7 +352,7 @@ export async function blockActionRequest(params) {
       } catch (error) {
         lastError = error;
 
-        if (attempt < 2 && ["ECONNRESET", "ETIMEDOUT", "ECONNABORTED"].includes(error.code)) {
+        if (attempt < maxAttempts - 1 && ["ECONNRESET", "ETIMEDOUT", "ECONNABORTED"].includes(error.code)) {
           await wait(750 * (attempt + 1));
           continue;
         }
@@ -355,6 +363,29 @@ export async function blockActionRequest(params) {
 
     throw lastError;
   });
+}
+
+export async function getBlockByTimestamp(timestamp, closest = "after") {
+  const ts = Math.floor(Number(timestamp));
+
+  try {
+    const result = await blockActionRequest(
+      {
+        module: "block",
+        action: "getblocknobytime",
+        timestamp: ts,
+        closest,
+      },
+      { timeout: 25_000, maxAttempts: 2 },
+    );
+    return Number(result);
+  } catch (error) {
+    const estimated = estimateBlockNumber(ts, CHAIN_ID);
+    console.warn(
+      `[BlockByTime] Upstream failed for timestamp ${ts} (${closest}); using estimated block ${estimated}: ${error.message}`,
+    );
+    return estimated;
+  }
 }
 
 async function fetchPaginated(action, address, extra = {}) {
@@ -398,28 +429,18 @@ async function getAnalysisPeriod(analysisPeriod) {
   const start = normalizedPeriod === "ytd"
     ? new Date(Date.UTC(end.getUTCFullYear(), 0, 1))
     : new Date(end.getTime() - normalizedPeriod * 86_400_000);
-  const [startBlock, endBlock] = await Promise.all([
-    blockActionRequest({
-      module: "block",
-      action: "getblocknobytime",
-      timestamp: Math.floor(start.getTime() / 1000),
-      closest: "after",
-    }),
-    blockActionRequest({
-      module: "block",
-      action: "getblocknobytime",
-      timestamp: Math.floor(end.getTime() / 1000),
-      closest: "before",
-    }),
-  ]);
+  const startBlock = await getBlockByTimestamp(Math.floor(start.getTime() / 1000), "after");
+  const endBlock = shouldUseLatestBlock(end)
+    ? LATEST_BLOCK
+    : await getBlockByTimestamp(Math.floor(end.getTime() / 1000), "before");
 
   return {
     id: normalizedPeriod === "ytd" ? "ytd" : `${normalizedPeriod}d`,
     days: Math.max(1, Math.ceil((end.getTime() - start.getTime()) / 86_400_000)),
     start: start.toISOString(),
     end: end.toISOString(),
-    startBlock: Number(startBlock),
-    endBlock: Number(endBlock),
+    startBlock,
+    endBlock,
   };
 }
 
@@ -427,23 +448,12 @@ async function getDateRange(from, to) {
   const start = new Date(`${from}T00:00:00.000Z`);
   const requestedEnd = new Date(`${to}T23:59:59.999Z`);
   const includesCurrentDay = requestedEnd.getTime() >= Date.now();
-  const startBlockRequest = blockActionRequest({
-    module: "block",
-    action: "getblocknobytime",
-    timestamp: Math.floor(start.getTime() / 1000),
-    closest: "after",
-  });
-  const endBlockRequest = includesCurrentDay
-    ? Promise.resolve(99_999_999)
-    : blockActionRequest({
-      module: "block",
-      action: "getblocknobytime",
-      timestamp: Math.floor(requestedEnd.getTime() / 1000),
-      closest: "before",
-    });
-  const [startBlock, endBlock] = await Promise.all([startBlockRequest, endBlockRequest]);
+  const startBlock = await getBlockByTimestamp(Math.floor(start.getTime() / 1000), "after");
+  const endBlock = includesCurrentDay || shouldUseLatestBlock(requestedEnd)
+    ? LATEST_BLOCK
+    : await getBlockByTimestamp(Math.floor(requestedEnd.getTime() / 1000), "before");
 
-  return { start, end: requestedEnd, startBlock: Number(startBlock), endBlock: Number(endBlock) };
+  return { start, end: requestedEnd, startBlock, endBlock };
 }
 
 function addDirection(records, address) {

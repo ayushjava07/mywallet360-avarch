@@ -1,4 +1,5 @@
-import { createPortal, useCallback, useEffect, useId, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Info } from 'lucide-react'
 
 const OPEN_EVENT = 'context-tooltip:open'

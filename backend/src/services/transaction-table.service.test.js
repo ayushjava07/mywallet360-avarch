@@ -9,6 +9,7 @@ import {
   mapTransactionRow,
   normalizePeriod,
   resolveDirection,
+  resolveFillConfig,
 } from "./transaction-table.service.js";
 
 test("normalizePeriod accepts numeric strings", () => {
@@ -45,6 +46,17 @@ test("resolveDirection compares from/to against wallet address", () => {
     resolveDirection({ from: wallet, to: "0x2" }, wallet, "normal"),
     "OUT",
   );
+});
+
+test("resolveFillConfig scans deeper when hiding low-value rows", () => {
+  const preview = resolveFillConfig(true, 10);
+  const standard = resolveFillConfig(false, 25);
+
+  assert.ok(preview.maxFillPages > standard.maxFillPages);
+  assert.ok(preview.maxFillPages <= 8);
+  assert.equal(preview.maxFillPages, 6);
+  assert.ok(preview.upstreamBatchSize >= 100);
+  assert.equal(standard.maxFillPages, 4);
 });
 
 test("mapTransactionRow includes fee, amount, and direction fields", () => {

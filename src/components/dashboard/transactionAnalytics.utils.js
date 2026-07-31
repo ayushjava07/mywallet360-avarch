@@ -8,11 +8,18 @@ export const ANALYTICS_TABS = [
   { id: 'tokens', label: 'Token Transfers', title: 'Token Transfers' },
 ]
 
-export const DEFAULT_ANALYTICS_RANGE = '1m'
-
-export const ANALYTICS_RANGES = [
+export const ANALYTICS_VIEW_RANGES = [
+  { id: '1w', label: '1W', days: 7 },
   { id: '1m', label: '1M', days: 30 },
+  { id: '3m', label: '3M', days: 90 },
+  { id: 'ytd', label: 'YTD', days: null },
+  { id: '1y', label: '1Y', days: 365 },
+  { id: 'all', label: 'All', days: null },
 ]
+
+export const DEFAULT_ANALYTICS_VIEW_RANGE = 'ytd'
+export const ANALYTICS_RANGES = ANALYTICS_VIEW_RANGES.filter((item) => item.days)
+export const DEFAULT_ANALYTICS_RANGE = '1m'
 
 /** Chart rendering mode per analytics tab. */
 export const CHART_TYPES = {
@@ -22,21 +29,17 @@ export const CHART_TYPES = {
   tokens: 'combo',
 }
 
-/**
- * Distinct, colorblind-friendlier series colors.
- * Primary stays teal; secondary series use navy + warm accent.
- * Tokens (not hex) so charts re-tint with the light/dark theme.
- */
+/** Fixed hex palette — legend, stat accents, and chart strokes must match 1:1. */
 export const SERIES_COLORS = {
-  transactions: 'var(--series-primary)',
-  uniqueOutgoing: 'var(--series-secondary)',
-  uniqueIncoming: 'var(--series-tertiary)',
-  ethFeesSpent: 'var(--series-primary)',
-  ethFeesUsed: 'var(--series-secondary)',
-  ethSent: 'var(--series-primary)',
-  ethReceived: 'var(--series-tertiary)',
-  tokenTransfers: 'var(--series-primary)',
-  tokenContractsCount: 'var(--series-secondary)',
+  transactions: '#18c5c0',
+  uniqueOutgoing: '#1e3a5f',
+  uniqueIncoming: '#f59e0b',
+  ethFeesSpent: '#18c5c0',
+  ethFeesUsed: '#1e3a5f',
+  ethSent: '#18c5c0',
+  ethReceived: '#f59e0b',
+  tokenTransfers: '#18c5c0',
+  tokenContractsCount: '#1e3a5f',
 }
 
 const EMPTY_DAY = {
@@ -129,6 +132,19 @@ export function buildRangedChartData(rows, rangeId, now = new Date()) {
 
   const inWindow = sorted.filter((row) => row.date >= window.start && row.date <= window.end)
   return padDailyRange(inWindow, window.start, window.end)
+}
+
+export function buildPeriodChartData(rows, reportRange = null) {
+  const sorted = [...(rows || [])]
+    .map(normalizeDailyRow)
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
+
+  if (!reportRange?.from || !reportRange?.to) {
+    return sorted
+  }
+
+  const inWindow = sorted.filter((row) => row.date >= reportRange.from && row.date <= reportRange.to)
+  return padDailyRange(inWindow, reportRange.from, reportRange.to)
 }
 
 export function indexesForDateWindow(rows, startDateStr, endDateStr) {
@@ -317,6 +333,173 @@ export function getYearBoundaryDates(rows) {
   })
 
   return boundaries
+}
+
+export function symlog(value) {
+  const num = Number(value) || 0
+  if (num === 0) return 0
+  return Math.sign(num) * Math.log1p(Math.abs(num))
+}
+
+export function symexp(value) {
+  const num = Number(value) || 0
+  if (num === 0) return 0
+  return Math.sign(num) * Math.expm1(Math.abs(num))
+}
+
+export function symlogDataKey(seriesKey) {
+  return `__symlog_${seriesKey}`
+}
+
+export function addSymlogFields(rows, seriesKeys) {
+  return (rows || []).map((row) => {
+    const next = { ...row }
+    seriesKeys.forEach((key) => {
+      next[symlogDataKey(key)] = symlog(Number(row[key]) || 0)
+    })
+    return next
+  })
+}
+
+export function sliceViewRange(rows, viewRangeId, reportRange = null, now = new Date()) {
+  if (!rows?.length) return rows || []
+
+  const viewRange = ANALYTICS_VIEW_RANGES.find((item) => item.id === viewRangeId)
+  if (!viewRange || viewRangeId === 'all' || viewRangeId === 'ytd') {
+    if (viewRangeId === 'ytd' && reportRange?.from && reportRange?.to) {
+      return rows.filter((row) => row.date >= reportRange.from && row.date <= reportRange.to)
+    }
+    return rows
+  }
+
+  if (viewRange.days) {
+    const end = reportRange?.to || utcTodayStr(now)
+    const endDate = parseUtcDate(end)
+    const startDate = new Date(endDate.getTime() - (viewRange.days - 1) * DAY_MS)
+    const start = startDate.toISOString().slice(0, 10)
+    return rows.filter((row) => row.date >= start && row.date <= end)
+  }
+
+  return rows
+}
+
+export function detectSeriesOutliers(rows, seriesKeys, { multiplier = 3, percentile = 0.95 } = {}) {
+  if (!rows?.length || !seriesKeys?.length) return []
+
+  const points = []
+  rows.forEach((row, index) => {
+    seriesKeys.forEach((key) => {
+      const value = Number(row[key]) || 0
+      if (value > 0) points.push({ index, date: row.date, key, value })
+    })
+  })
+
+  if (!points.length) return []
+
+  const sortedValues = [...points.map((point) => point.value)].sort((a, b) => a - b)
+  const p95 = sortedValues[Math.min(sortedValues.length - 1, Math.floor(sortedValues.length * percentile))]
+  const threshold = Math.max(p95 * multiplier, p95 + 1)
+
+  return points
+    .filter((point) => point.value >= threshold && point.value > p95 * 2)
+    .sort((a, b) => b.value - a.value)
+}
+
+export function computeNormalRangeBrushIndexes(rows, outliers) {
+  if (!rows?.length) return { startIndex: 0, endIndex: 0 }
+  if (!outliers?.length) {
+    return { startIndex: 0, endIndex: rows.length - 1 }
+  }
+
+  const outlierIndexes = new Set(outliers.map((item) => item.index))
+  let best = { startIndex: 0, endIndex: rows.length - 1, length: 0 }
+  let segmentStart = 0
+
+  for (let index = 0; index <= rows.length; index += 1) {
+    if (index === rows.length || outlierIndexes.has(index)) {
+      const length = index - segmentStart
+      if (length > best.length) {
+        best = {
+          startIndex: segmentStart,
+          endIndex: Math.max(segmentStart, index - 1),
+          length,
+        }
+      }
+      segmentStart = index + 1
+    }
+  }
+
+  return { startIndex: best.startIndex, endIndex: best.endIndex }
+}
+
+export function computeSymlogYDomain(rows, seriesKeys) {
+  const logValues = []
+  ;(rows || []).forEach((row) => {
+    seriesKeys.forEach((key) => {
+      const value = Number(row[key]) || 0
+      if (value > 0) logValues.push(symlog(value))
+    })
+  })
+
+  if (!logValues.length) {
+    return {
+      domain: [0, 1],
+      tickValues: [0, 0.5, 1],
+      trueMax: 0,
+    }
+  }
+
+  const trueMax = Math.max(...logValues)
+  const tickValues = []
+  for (let step = 0; step <= 5; step += 1) {
+    tickValues.push((trueMax * step) / 5)
+  }
+
+  return {
+    domain: [0, trueMax * 1.08 || 1],
+    tickValues,
+    trueMax: symexp(trueMax),
+  }
+}
+
+export function formatSymlogTick(logValue, tabId = 'transactions') {
+  const raw = symexp(logValue)
+  if (raw >= 1000) return `${Math.round(raw / 100) / 10}k`
+  return formatYAxisTick(raw, tabId)
+}
+
+export function makeSymlogTickFormatter(tabId = 'transactions') {
+  const used = new Map()
+  return (logValue) => {
+    let label = formatSymlogTick(logValue, tabId)
+    const raw = symexp(logValue)
+    if (!used.has(label)) {
+      used.set(label, raw)
+      return label
+    }
+    if (used.get(label) === raw) return label
+    label = raw >= 1000 ? `${Math.round(raw)}` : Number(raw.toPrecision(3)).toString()
+    used.set(label, raw)
+    return label
+  }
+}
+
+export function getOutlierBrushMarkers(rows, outliers, primaryKey) {
+  if (!rows?.length || !outliers?.length) return []
+
+  const logKey = symlogDataKey(primaryKey)
+  const maxLog = rows.reduce(
+    (max, row) => Math.max(max, Number(row[logKey]) || 0),
+    0,
+  )
+
+  return outliers
+    .filter((item) => item.key === primaryKey)
+    .map((item) => ({
+      ...item,
+      logValue: symlog(item.value),
+      markerY: maxLog * 0.92,
+    }))
 }
 
 export function computeSoftYDomain(rows, seriesKeys, { logScale = false } = {}) {

@@ -639,7 +639,9 @@ async function getWalletByAddress(address, analysisPeriod = 'ytd', customRange =
     expectedPeriodId = `${analysisPeriod}d`
   }
 
-  const response = await apiFetch(`${API_BASE_URL}/api/wallet/${normalizedAddress}?${query}`)
+  const response = await apiFetch(`${API_BASE_URL}/api/wallet/${normalizedAddress}?${query}`, {
+    timeoutMs: 120_000,
+  })
   const data = await response.json().catch(() => null)
 
   if (!response.ok) {
@@ -685,7 +687,10 @@ async function getWalletTransactions(address, {
     params.set('days', String(analysisDays))
   }
 
-  const response = await apiFetch(`${API_BASE_URL}/api/wallet/${normalizedAddress}/transactions?${params}`, { signal })
+  const response = await apiFetch(`${API_BASE_URL}/api/wallet/${normalizedAddress}/transactions?${params}`, {
+    signal,
+    timeoutMs: 75_000,
+  })
   const data = await response.json().catch(() => null)
 
   if (!response.ok) {

@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import { Icon } from '../common/Icon'
+import { useNotableTransactions } from '../../hooks/useNotableTransactions'
+import { NOTABLE_ACTIVITY_PREVIEW_LIMIT } from './notableActivity.utils'
 import {
   ActivityAmountWithTooltip,
   ActivityHashWithTooltip,
@@ -42,8 +44,16 @@ function Transaction({ item, onClick, note }) {
   )
 }
 
-export function Activity({ transactions, periodLabel, onSeeAll }) {
+export function Activity({
+  walletAddress,
+  analysisDays,
+  customRange,
+  periodLabel,
+  transactionsEnabled = true,
+  onSeeAll,
+}) {
   const [selectedTx, setSelectedTx] = useState(null)
+  const [showLowValue, setShowLowValue] = useState(false)
   const [notes, setNotes] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem('mywallet360_tx_notes') || '{}')
@@ -52,7 +62,16 @@ export function Activity({ transactions, periodLabel, onSeeAll }) {
     }
   })
 
-  const visibleTransactions = transactions.slice(0, 3)
+  const { items, isLoading, error, hasMore } = useNotableTransactions({
+    walletAddress,
+    analysisDays,
+    customRange,
+    sort: 'age',
+    order: 'desc',
+    hideLowValue: !showLowValue,
+    limit: NOTABLE_ACTIVITY_PREVIEW_LIMIT,
+    enabled: transactionsEnabled,
+  })
 
   return (
     <>
@@ -61,16 +80,35 @@ export function Activity({ transactions, periodLabel, onSeeAll }) {
           <div className="activity-card__heading flex min-h-[35px] items-center justify-between gap-4">
             <div className="grid gap-[3px]">
               <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500 dark:text-slate-400">{periodLabel}</span>
-              <h2>Recent Activity</h2>
+              <h2>Notable Activity</h2>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                {showLowValue ? 'Showing all recent transfers' : 'Dust hidden · latest meaningful transfers'}
+              </p>
             </div>
-            {transactions.length > 3 && onSeeAll && (
-              <button type="button" onClick={onSeeAll}>
-                See All
-              </button>
-            )}
+            <div className="flex items-center gap-3 shrink-0">
+              <label className="tx-table-hide-low flex items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={showLowValue}
+                  onChange={(event) => setShowLowValue(event.target.checked)}
+                />
+                Show low-value txns
+              </label>
+              {(hasMore || items.length > 0) && onSeeAll && (
+                <button type="button" onClick={onSeeAll}>
+                  See all
+                </button>
+              )}
+            </div>
           </div>
           <div className="transaction-list mt-3 grid grid-cols-1 gap-[3px]">
-            {visibleTransactions.map((item) => (
+            {isLoading && (
+              <p className="py-8 text-center text-sm text-slate-500">Loading notable activity…</p>
+            )}
+            {!isLoading && error && (
+              <p className="py-8 text-center text-sm text-rose-500">{error}</p>
+            )}
+            {!isLoading && !error && items.map((item) => (
               <Transaction
                 item={item}
                 key={item.title}
@@ -78,7 +116,13 @@ export function Activity({ transactions, periodLabel, onSeeAll }) {
                 note={notes[item.title]}
               />
             ))}
-            {!transactions.length && <p>No normal transactions found during this period.</p>}
+            {!isLoading && !error && !items.length && (
+              <p className="py-8 text-center text-sm text-slate-500">
+                {showLowValue
+                  ? 'No normal transactions found during this period.'
+                  : 'No meaningful transfers this period. Try showing low-value txns.'}
+              </p>
+            )}
           </div>
         </div>
       </section>

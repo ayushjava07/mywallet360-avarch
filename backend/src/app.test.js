@@ -9,10 +9,12 @@ process.env.NODE_ENV = "test";
 const { default: app } = await import("./app.js");
 const { clearWalletServiceCaches } = await import("./services/blockaction.service.js");
 const { clearProtocolCache } = await import("./services/protocol-resolution.service.js");
+const { clearTransactionTableCaches } = await import("./services/transaction-table.service.js");
 
 function resetTestCaches() {
   clearWalletServiceCaches();
   clearProtocolCache();
+  clearTransactionTableCaches();
 }
 
 async function withServer(run) {

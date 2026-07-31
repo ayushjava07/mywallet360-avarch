@@ -1,4 +1,4 @@
-const DEFAULT_TIMEOUT_MS = 50_000
+const DEFAULT_TIMEOUT_MS = 90_000
 
 export async function apiFetch(path, options = {}) {
   const timeoutMs = options.timeoutMs || DEFAULT_TIMEOUT_MS
@@ -6,7 +6,11 @@ export async function apiFetch(path, options = {}) {
   const signal = options.signal
     ? AbortSignal.any([controller.signal, options.signal])
     : controller.signal
-  const timeout = globalThis.setTimeout(() => controller.abort(), timeoutMs)
+  let timedOut = false
+  const timeout = globalThis.setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, timeoutMs)
 
   try {
     return await fetch(path, {
@@ -19,7 +23,10 @@ export async function apiFetch(path, options = {}) {
     })
   } catch (error) {
     if (error.name === 'AbortError') {
-      throw new Error('The request took too long. Please try again.')
+      if (timedOut) {
+        throw new Error('The request took too long. Please try again.')
+      }
+      throw error
     }
 
     throw new Error('The service is unavailable right now. Please try again.')

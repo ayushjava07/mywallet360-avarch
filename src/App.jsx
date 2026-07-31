@@ -20,6 +20,28 @@ import { ANALYSIS_PERIODS, walletService } from './services/walletService'
 
 const exampleWallets = walletService.listExampleWallets()
 
+function WalletTransactionsExplorer({
+  wallet,
+  resolvedIdentifier,
+  analysisDays,
+  customRange,
+  onBack,
+}) {
+  return (
+    <TransactionsExplorer
+      walletAddress={wallet.id}
+      ensLabel={resolvedIdentifier?.type === 'ens' ? resolvedIdentifier.originalInput : wallet.profile?.wallet !== wallet.id ? wallet.profile?.wallet : null}
+      periodLabel={wallet.periodLabel}
+      analysisDays={analysisDays}
+      customRange={customRange}
+      transactionCount={wallet.transactionCount}
+      transactionCountIsLowerBound={wallet.transactionCountIsLowerBound}
+      nftTransferCount={wallet.nftBreakdown?.total}
+      onBack={onBack}
+    />
+  )
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState('Overview')
   const [displayMode, setDisplayMode] = useState('usd')
@@ -52,7 +74,15 @@ export default function App() {
 
   useEffect(() => {
     setShowTransactionsExplorer(false)
-  }, [wallet?.id, activeTab])
+  }, [wallet?.id])
+
+  const explorerProps = wallet ? {
+    wallet,
+    resolvedIdentifier,
+    analysisDays,
+    customRange,
+    onBack: () => setShowTransactionsExplorer(false),
+  } : null
 
   return (
     <div className="app-shell mx-auto w-[min(100%,1180px)] px-[clamp(16px,3vw,32px)] pb-[124px] max-[700px]:px-4 max-[700px]:pb-[120px] max-[480px]:px-3 max-[480px]:pb-[116px] max-[360px]:px-[9px] max-[360px]:pb-28">
@@ -84,18 +114,8 @@ export default function App() {
           {activeTab === 'Overview' && (
             <main className={`grid gap-9 max-[700px]:gap-6 ${isLoading ? 'dashboard-loading' : 'dashboard-ready'}`} key={`overview-${wallet.id}`}>
               {isLoading && !showTransactionsExplorer && <DashboardLoader />}
-              {showTransactionsExplorer ? (
-                <TransactionsExplorer
-                  walletAddress={wallet.id}
-                  ensLabel={resolvedIdentifier?.type === 'ens' ? resolvedIdentifier.originalInput : wallet.profile?.wallet !== wallet.id ? wallet.profile?.wallet : null}
-                  periodLabel={wallet.periodLabel}
-                  analysisDays={analysisDays}
-                  customRange={customRange}
-                  transactionCount={wallet.transactionCount}
-                  transactionCountIsLowerBound={wallet.transactionCountIsLowerBound}
-                  nftTransferCount={wallet.nftBreakdown?.total}
-                  onBack={() => setShowTransactionsExplorer(false)}
-                />
+              {showTransactionsExplorer && explorerProps ? (
+                <WalletTransactionsExplorer {...explorerProps} />
               ) : (
                 <>
                   <DashboardBar
@@ -116,6 +136,8 @@ export default function App() {
                     dailyAnalytics={wallet.dailyAnalytics}
                     addressLabel={wallet.profile?.wallet || wallet.chipLabel}
                     ethPrice={wallet.ethPrice}
+                    periodLabel={wallet.periodLabel}
+                    reportRange={wallet.reportRange}
                   />
                   <AnalysisPeriodBar
                     periods={ANALYSIS_PERIODS}
@@ -124,11 +146,14 @@ export default function App() {
                     pendingDays={pendingAnalysisDays}
                     isLoading={isPeriodLoading}
                     onPeriodChange={selectAnalysisPeriod}
-                    scopeHint="Period applies to: Recent Activity"
+                    scopeHint="Period applies to: charts & activity preview"
                   />
                   <Activity
-                    transactions={wallet.transactions}
+                    walletAddress={wallet.id}
+                    analysisDays={analysisDays}
+                    customRange={customRange}
                     periodLabel={wallet.periodLabel}
+                    transactionsEnabled={!isLoading && !isPeriodLoading}
                     onSeeAll={() => setShowTransactionsExplorer(true)}
                   />
                 </>
@@ -138,17 +163,30 @@ export default function App() {
 
           {activeTab === 'Money Flow' && (
             <main key={`flow-${wallet.id}`} className={`grid gap-9 max-[700px]:gap-6 ${isLoading ? 'dashboard-loading' : 'dashboard-ready'}`}>
-              {isLoading && <DashboardLoader />}
-              <AnalysisPeriodBar
-                periods={ANALYSIS_PERIODS}
-                selectedDays={analysisDays}
-                customRange={customRange}
-                pendingDays={pendingAnalysisDays}
-                isLoading={isPeriodLoading}
-                onPeriodChange={selectAnalysisPeriod}
-                scopeHint="Period applies to: Money Flow & transactions"
-              />
-              <MoneyFlowTab wallet={wallet} />
+              {isLoading && !showTransactionsExplorer && <DashboardLoader />}
+              {showTransactionsExplorer && explorerProps ? (
+                <WalletTransactionsExplorer {...explorerProps} />
+              ) : (
+                <>
+                  <AnalysisPeriodBar
+                    periods={ANALYSIS_PERIODS}
+                    selectedDays={analysisDays}
+                    customRange={customRange}
+                    pendingDays={pendingAnalysisDays}
+                    isLoading={isPeriodLoading}
+                    onPeriodChange={selectAnalysisPeriod}
+                    scopeHint="Period applies to: money flow & activity preview"
+                  />
+                  <MoneyFlowTab
+                    wallet={wallet}
+                    walletAddress={wallet.id}
+                    analysisDays={analysisDays}
+                    customRange={customRange}
+                    transactionsEnabled={!isLoading && !isPeriodLoading}
+                    onSeeAll={() => setShowTransactionsExplorer(true)}
+                  />
+                </>
+              )}
             </main>
           )}
 
